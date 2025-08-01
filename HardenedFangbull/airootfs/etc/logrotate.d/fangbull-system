@@ -37,8 +37,6 @@
     maxsize 10M
 }
 
-
-
 # System management tool logs
 /var/log/fangbull-usbguard.log {
     weekly
