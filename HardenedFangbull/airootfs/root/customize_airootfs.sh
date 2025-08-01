@@ -66,7 +66,5 @@ chattr +i /usr/bin/permissionhardening
 
 # Protect systemd service files
 echo "[INFO] Protecting systemd service files..."
-chattr +i /etc/systemd/system/great-fangbull-firewall.service
-chattr +i /etc/systemd/system/permissionhardening.service
 
 echo "[INFO] Critical file protection completed successfully"
