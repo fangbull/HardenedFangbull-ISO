@@ -23,7 +23,6 @@ systemctl enable firstboot.service
 
 # Enable log management and optimization
 systemctl enable fangbull-log-optimizer.timer
-systemctl enable logrotate.timer
 
 # Enable Fangbull Attack Detection Systems
 systemctl enable ghost-service-killer.service
