@@ -21,21 +21,6 @@ systemctl enable haveged
 
 systemctl enable firstboot.service
 
-# Enable log management and optimization
-systemctl enable fangbull-log-optimizer.timer
-
-# Enable Fangbull Attack Detection Systems
-systemctl enable ghost-service-killer.service
-systemctl enable hidden-binary-execution-catcher.service
-systemctl enable malscript-exterminator.service
-systemctl enable memory-resident-process-checker.service
-systemctl enable netlink-monitor-watchdog.service
-systemctl enable rootshell-injection-mitigator.service
-systemctl enable shell-fork-bomb-terminator.service
-systemctl enable suspicious-cron-dropper-killer.service
-systemctl enable tty-hijack-detector.service
-systemctl enable zombie-process-hunter.service
-
 ############################################
 # AppArmor AUR Helper Security Enforcement
 ############################################
@@ -77,7 +62,7 @@ chattr +i /etc/sysctl.d/sysctl.conf
 chattr +i /usr/local/bin/great-fangbull-firewall
 chattr +i /usr/local/bin/fangbull-sys
 chattr +i /usr/local/bin/fangbull-crypt
-chattr +i /usr/local/bin/permissionhardening
+chattr +i /usr/bin/permissionhardening
 
 # Protect systemd service files
 echo "[INFO] Protecting systemd service files..."
