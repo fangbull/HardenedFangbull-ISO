@@ -1,0 +1,74 @@
+# Logrotate configuration for Hardened Fangbull System
+# Manages system logs efficiently and prevents disk space issues
+
+# Fangbull System Administrator logs
+/var/log/fangbull-sys.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root root
+    maxsize 10M
+}
+
+# Great Fangbull Firewall logs
+/var/log/fangbull-firewall.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root root
+    maxsize 10M
+}
+
+# Permission Hardening logs
+/var/log/fangbull-permission.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root root
+    maxsize 10M
+}
+
+
+
+# System management tool logs
+/var/log/fangbull-usbguard.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root root
+    maxsize 5M
+}
+
+/var/log/fangbull-jails.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root root
+    maxsize 5M
+}
+
+/var/log/fangbull-crypt.log {
+    weekly
+    rotate 2
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root root
+    maxsize 2M
+}

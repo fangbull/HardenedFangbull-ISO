@@ -459,9 +459,7 @@ show_service_management() {
     local security_services=(
         "great-fangbull-firewall"
         "apparmor"
-        "ghost-service-killer"
-        "malscript-exterminator"
-        "memory-resident-process-checker"
+        "permissionhardening"
     )
     
     for service in "${security_services[@]}"; do
