@@ -542,9 +542,6 @@ emergency_lockdown() {
         # Restart firewall with maximum security
         systemctl restart great-fangbull-firewall
         
-        # Restart all IDS services
-        restart_ids
-        
         # Enable maximum logging
         systemctl restart rsyslog
         
