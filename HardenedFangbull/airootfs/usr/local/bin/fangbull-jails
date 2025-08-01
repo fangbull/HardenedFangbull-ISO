@@ -43,8 +43,8 @@ print_header() {
     clear
     echo -e "${CYAN}"
     echo "╔══════════════════════════════════════════════════════════════════════════════╗"
-    echo "║                        🔒 FANGBULL FIREJAIL MANAGER 🔒                      ║"
-    echo "║                         Advanced Sandbox Management                         ║"
+    echo "║                         FANGBULL FIREJAIL MANAGER                            ║"
+    echo "║                         Advanced Sandbox Management                          ║"
     echo "╚══════════════════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }

@@ -70,19 +70,8 @@ chattr +i /etc/resolv.conf
 chattr +i /etc/security/limits.d/hardened.conf
 chattr +i /etc/sysctl.d/sysctl.conf
 
-# Protect IDS scripts from modification
-echo "[INFO] Protecting Fangbull IDS scripts..."
-chattr +i /usr/local/bin/ghost_service_killer
-chattr +i /usr/local/bin/hidden_binary_execution_catcher
-chattr +i /usr/local/bin/malscript_exterminator
-chattr +i /usr/local/bin/memory_resident_process_checker
-chattr +i /usr/local/bin/netlink_monitor_watchdog
-chattr +i /usr/local/bin/rootshell_injection_mitigator
-chattr +i /usr/local/bin/shell_fork_bomb_terminator
-chattr +i /usr/local/bin/suspicious_cron_dropper_killer
-chattr +i /usr/local/bin/tty_hijack_detector
-chattr +i /usr/local/bin/zombie_process_hunter
-chattr +i /usr/local/bin/common_functions
+# IDS SERVICES REMOVED: Temporarily removed to prevent boot RAM overflow
+# IDS system will be re-implemented with better resource management later"
 
 # Protect firewall and system management scripts
 chattr +i /usr/local/bin/great-fangbull-firewall
@@ -94,15 +83,5 @@ chattr +i /usr/local/bin/permissionhardening
 echo "[INFO] Protecting systemd service files..."
 chattr +i /etc/systemd/system/great-fangbull-firewall.service
 chattr +i /etc/systemd/system/permissionhardening.service
-chattr +i /etc/systemd/system/ghost-service-killer.service
-chattr +i /etc/systemd/system/hidden-binary-execution-catcher.service
-chattr +i /etc/systemd/system/malscript-exterminator.service
-chattr +i /etc/systemd/system/memory-resident-process-checker.service
-chattr +i /etc/systemd/system/netlink-monitor-watchdog.service
-chattr +i /etc/systemd/system/rootshell-injection-mitigator.service
-chattr +i /etc/systemd/system/shell-fork-bomb-terminator.service
-chattr +i /etc/systemd/system/suspicious-cron-dropper-killer.service
-chattr +i /etc/systemd/system/tty-hijack-detector.service
-chattr +i /etc/systemd/system/zombie-process-hunter.service
 
 echo "[INFO] Critical file protection completed successfully"

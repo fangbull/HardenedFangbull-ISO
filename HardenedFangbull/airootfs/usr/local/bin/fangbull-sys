@@ -18,9 +18,7 @@ WHITE='\033[1;37m'
 NC='\033[0m' # No Color
 
 # Configuration
-LOG_DIR="/var/log/fangbull-ids"
 FIREWALL_SCRIPT="/usr/local/bin/great-fangbull-firewall"
-IDS_SCRIPTS_DIR="/usr/local/bin"
 SYSTEM_LOG="/var/log/fangbull-sys.log"
 
 # Logging function
@@ -93,45 +91,7 @@ show_system_info() {
     echo
 }
 
-# Check IDS system status
-check_ids_status() {
-    echo -e "${BLUE}[INFO]${NC} Checking Fangbull IDS System Status..."
-    echo -e "${WHITE}═══════════════════════════════════════════════════════════════════════════════${NC}"
-    
-    local ids_services=(
-        "ghost-service-killer"
-        "hidden-binary-execution-catcher"
-        "malscript-exterminator"
-        "memory-resident-process-checker"
-        "netlink-monitor-watchdog"
-        "rootshell-injection-mitigator"
-        "shell-fork-bomb-terminator"
-        "suspicious-cron-dropper-killer"
-        "tty-hijack-detector"
-        "zombie-process-hunter"
-    )
-    
-    echo -e "${CYAN}IDS Services Status:${NC}"
-    for service in "${ids_services[@]}"; do
-        if systemctl is-active --quiet "$service"; then
-            echo -e "  ${GREEN}✓${NC} $service: ${GREEN}ACTIVE${NC}"
-        else
-            echo -e "  ${RED}✗${NC} $service: ${RED}INACTIVE${NC}"
-        fi
-    done
-    echo
-    
-    # Check log directory
-    echo -e "${CYAN}IDS Log Directory:${NC}"
-    if [[ -d "$LOG_DIR" ]]; then
-        echo -e "  ${GREEN}✓${NC} Log directory exists: $LOG_DIR"
-        echo "  Log files: $(find "$LOG_DIR" -name '*.log' | wc -l) files"
-        echo "  Total size: $(du -sh "$LOG_DIR" 2>/dev/null | cut -f1)"
-    else
-        echo -e "  ${RED}✗${NC} Log directory missing: $LOG_DIR"
-    fi
-    echo
-}
+# IDS system removed - function disabled
 
 # Check firewall status
 check_firewall_status() {
@@ -318,60 +278,29 @@ show_menu() {
     echo "  3) Disk Usage & File System Analysis"
     echo "  4) Network Connections & Interface Status"
     echo
-    echo -e "${YELLOW}Security & IDS Management:${NC}"
-    echo "  5) IDS Status & Configuration"
-    echo "  6) Firewall Status & Rules"
-    echo "  7) Security Scan Suite (RKHunter + ClamAV + Custom)"
-    echo "  8) Threat Intelligence & Attack Analysis"
-    echo "  9) File Integrity Monitoring"
+    echo -e "${YELLOW}Security Management:${NC}"
+    echo "  5) Firewall Status & Rules"
+    echo "  6) Security Scan Suite (RKHunter + ClamAV + Custom)"
+    echo "  7) Threat Intelligence & Attack Analysis"
+    echo "  8) File Integrity Monitoring"
     echo
     echo -e "${YELLOW}System Maintenance:${NC}"
-    echo " 10) System Update & Package Management"
-    echo " 11) Cache & Log Cleanup"
-    echo " 12) Service Management & Control"
-    echo " 13) User & Permission Management"
+    echo "  9) System Update & Package Management"
+    echo " 10) Cache & Log Cleanup"
+    echo " 11) Service Management & Control"
+    echo " 12) User & Permission Management"
     echo
     echo -e "${YELLOW}Advanced Operations:${NC}"
-    echo " 14) System Performance Tuning"
-    echo " 15) Backup & Recovery Tools"
-    echo " 16) Network Diagnostics & Tools"
-    echo " 17) System Logs & Forensic Analysis"
+    echo " 13) System Performance Tuning"
+    echo " 14) Backup & Recovery Tools"
+    echo " 15) Network Diagnostics & Tools"
+    echo " 16) System Logs & Forensic Analysis"
     echo
     echo -e "${YELLOW}Quick Actions:${NC}"
-    echo " 18) Restart All Security Services"
-    echo " 19) Emergency Security Lockdown"
+    echo " 17) Restart Firewall Service"
+    echo " 18) Emergency Security Lockdown"
     echo "  0) Exit"
     echo -e "${WHITE}═══════════════════════════════════════════════════════════════════════════════${NC}"
-}
-
-# Restart IDS services
-restart_ids() {
-    echo -e "${BLUE}[INFO]${NC} Restarting Fangbull IDS Services..."
-    log_message "IDS services restart initiated"
-    
-    local ids_services=(
-        "ghost-service-killer"
-        "hidden-binary-execution-catcher"
-        "malscript-exterminator"
-        "memory-resident-process-checker"
-        "netlink-monitor-watchdog"
-        "rootshell-injection-mitigator"
-        "shell-fork-bomb-terminator"
-        "suspicious-cron-dropper-killer"
-        "tty-hijack-detector"
-        "zombie-process-hunter"
-    )
-    
-    for service in "${ids_services[@]}"; do
-        echo "  Restarting $service..."
-        if systemctl restart "$service"; then
-            echo -e "    ${GREEN}✓${NC} $service restarted successfully"
-        else
-            echo -e "    ${RED}✗${NC} Failed to restart $service"
-        fi
-    done
-    
-    log_message "IDS services restart completed"
 }
 
 # Restart firewall
@@ -667,37 +596,33 @@ main() {
                 ;;
             5)
                 print_header
-                check_ids_status
+                check_firewall_status
                 ;;
             6)
                 print_header
-                check_firewall_status
+                security_scan
                 ;;
             7)
                 print_header
-                security_scan
+                show_threat_analysis
                 ;;
             8)
                 print_header
-                show_threat_analysis
+                show_file_integrity
                 ;;
             9)
                 print_header
-                show_file_integrity
+                system_update
                 ;;
             10)
                 print_header
-                system_update
+                clean_cache
                 ;;
             11)
                 print_header
-                clean_cache
-                ;;
-            12)
-                print_header
                 show_service_management
                 ;;
-            13)
+            12)
                 print_header
                 echo -e "${BLUE}[INFO]${NC} User & Permission Management..."
                 echo "  Current user: $(whoami)"
@@ -705,7 +630,7 @@ main() {
                 echo "  Sudo access: $(sudo -l 2>/dev/null | wc -l) rules"
                 echo "  Active sessions: $(who | wc -l)"
                 ;;
-            14)
+            13)
                 print_header
                 echo -e "${BLUE}[INFO]${NC} System Performance Tuning..."
                 echo "  CPU Governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo 'N/A')"
@@ -713,7 +638,7 @@ main() {
                 echo "  Dirty ratio: $(cat /proc/sys/vm/dirty_ratio)"
                 echo "  TCP congestion control: $(cat /proc/sys/net/ipv4/tcp_congestion_control)"
                 ;;
-            15)
+            14)
                 print_header
                 echo -e "${BLUE}[INFO]${NC} Backup & Recovery Tools..."
                 echo "  Available backup tools:"
@@ -722,23 +647,22 @@ main() {
                 command -v age >/dev/null && echo "    ✓ age encryption available"
                 echo "  Use fangbull-crypt for secure backups"
                 ;;
-            16)
+            15)
                 print_header
                 show_network_diagnostics
                 ;;
-            17)
+            16)
                 print_header
                 view_system_logs
                 ;;
-            18)
+            17)
                 print_header
-                echo -e "${BLUE}[INFO]${NC} Restarting All Security Services..."
-                restart_ids
+                echo -e "${BLUE}[INFO]${NC} Restarting Firewall Service..."
                 restart_firewall
                 systemctl restart apparmor
-                echo -e "${GREEN}✓${NC} All security services restarted"
+                echo -e "${GREEN}✓${NC} Security services restarted"
                 ;;
-            19)
+            18)
                 print_header
                 emergency_lockdown
                 ;;
