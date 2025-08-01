@@ -1,0 +1,51 @@
+#include <tunables/global>
+
+/usr/local/bin/shell_fork_bomb_terminator {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability dac_override,
+  capability kill,
+  capability sys_ptrace,
+  capability sys_resource,
+
+  /usr/local/bin/shell_fork_bomb_terminator r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Process monitoring for fork bomb detection
+  /proc/ r,
+  /proc/*/stat r,
+  /proc/*/status r,
+  /proc/*/cmdline r,
+  /proc/*/exe r,
+  /proc/loadavg r,
+  /proc/sys/kernel/pid_max r,
+
+  # System resource monitoring
+  /sys/fs/cgroup/ r,
+  /sys/fs/cgroup/** r,
+
+  # Shell monitoring
+  /bin/sh ix,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Fangbull IDS logging and data directories
+  /var/log/fangbull-ids/ rw,
+  /var/log/fangbull-ids/** rw,
+  
+  # Logging
+  /var/log/fangbull-fork-bomb-terminator.log w,
+  /dev/log w,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+
+  # Deny dangerous operations
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny /etc/passwd w,
+  deny /etc/shadow w,
+}

@@ -1,0 +1,497 @@
+#!/usr/bin/env bash
+
+#
+# Fangbull Firejail Manager
+# A comprehensive menu-driven Firejail sandbox management tool
+# Author: root0emir
+# Version: 1.0
+# Last Modified: 2025-01-08
+#
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m' # No Color
+
+# Configuration
+FIREJAIL_PROFILES_DIR="/etc/firejail"
+CUSTOM_PROFILES_DIR="/home/$USER/.config/firejail"
+LOG_FILE="/var/log/fangbull-jails.log"
+
+# Check if Firejail is installed
+check_firejail() {
+    if ! command -v firejail >/dev/null 2>&1; then
+        echo -e "${RED}[ERROR]${NC} Firejail is not installed"
+        echo "Please install Firejail: pacman -S firejail"
+        exit 1
+    fi
+}
+
+# Logging function
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+# Print header
+print_header() {
+    clear
+    echo -e "${CYAN}"
+    echo "╔══════════════════════════════════════════════════════════════════════════════╗"
+    echo "║                        🔒 FANGBULL FIREJAIL MANAGER 🔒                      ║"
+    echo "║                         Advanced Sandbox Management                         ║"
+    echo "╚══════════════════════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+# Show main menu
+show_menu() {
+    echo -e "${WHITE}═══════════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}FIREJAIL SANDBOX MANAGEMENT MENU:${NC}"
+    echo -e "${YELLOW}Quick Launch Applications:${NC}"
+    echo "  1) Launch Firefox (Sandboxed)"
+    echo "  2) Launch Text Editor (Sandboxed)"
+    echo "  3) Launch File Manager (Sandboxed)"
+    echo "  4) Launch Terminal (Sandboxed)"
+    echo "  5) Launch Custom Application"
+    echo
+    echo -e "${YELLOW}Advanced Sandbox Options:${NC}"
+    echo "  6) Launch with Custom Profile"
+    echo "  7) Launch with Network Isolation"
+    echo "  8) Launch with Filesystem Restrictions"
+    echo "  9) Launch with X11 Isolation"
+    echo " 10) Launch with Audio Restrictions"
+    echo
+    echo -e "${YELLOW}File & Document Sandboxing:${NC}"
+    echo " 11) Open Document Safely"
+    echo " 12) Open Image/Media File"
+    echo " 13) Open Archive/Compressed File"
+    echo " 14) Open Unknown File Type"
+    echo
+    echo -e "${YELLOW}Profile Management:${NC}"
+    echo " 15) List Available Profiles"
+    echo " 16) Create Custom Profile"
+    echo " 17) Edit Existing Profile"
+    echo " 18) Test Profile Security"
+    echo " 19) Import/Export Profiles"
+    echo
+    echo -e "${YELLOW}Monitoring & Control:${NC}"
+    echo " 20) List Active Sandboxes"
+    echo " 21) Monitor Sandbox Activity"
+    echo " 22) Kill Sandbox Process"
+    echo " 23) View Sandbox Logs"
+    echo " 24) Security Audit Report"
+    echo
+    echo -e "${YELLOW}Configuration:${NC}"
+    echo " 25) Configure Default Settings"
+    echo " 26) Security Level Presets"
+    echo " 27) Whitelist/Blacklist Management"
+    echo "  0) Exit"
+    echo -e "${WHITE}═══════════════════════════════════════════════════════════════════════════════${NC}"
+}
+
+# Launch Firefox in sandbox
+launch_firefox() {
+    echo -e "${BLUE}[INFO]${NC} Launching Firefox in secure sandbox..."
+    log_message "Firefox sandbox launched"
+    
+    # Enhanced Firefox security profile
+    firejail --profile=firefox \
+             --dns=1.1.1.1 \
+             --netfilter \
+             --no3d \
+             --nodvd \
+             --nogroups \
+             --nonewprivs \
+             --noroot \
+             --nosound \
+             --notv \
+             --nou2f \
+             --novideo \
+             --private-cache \
+             --private-dev \
+             --private-tmp \
+             --seccomp \
+             firefox &
+    
+    echo -e "${GREEN}✓${NC} Firefox launched in sandbox"
+}
+
+# Launch text editor in sandbox
+launch_editor() {
+    echo -e "${BLUE}[INFO]${NC} Available text editors:"
+    echo "1) nano (simple)"
+    echo "2) vim (advanced)"
+    echo "3) gedit (GUI)"
+    echo "4) mousepad (lightweight GUI)"
+    echo -n -e "${YELLOW}Choose editor [1-4]: ${NC}"
+    read -r editor_choice
+    
+    local editor_cmd
+    case $editor_choice in
+        1) editor_cmd="nano" ;;
+        2) editor_cmd="vim" ;;
+        3) editor_cmd="gedit" ;;
+        4) editor_cmd="mousepad" ;;
+        *) editor_cmd="nano" ;;
+    esac
+    
+    echo -e "${BLUE}[INFO]${NC} Launching $editor_cmd in secure sandbox..."
+    log_message "Text editor $editor_cmd sandbox launched"
+    
+    firejail --private-tmp \
+             --private-dev \
+             --noroot \
+             --nosound \
+             --no3d \
+             --seccomp \
+             --caps.drop=all \
+             $editor_cmd &
+    
+    echo -e "${GREEN}✓${NC} $editor_cmd launched in sandbox"
+}
+
+# Launch custom application
+launch_custom_app() {
+    echo -n -e "${YELLOW}Enter application command to sandbox: ${NC}"
+    read -r app_command
+    
+    if [[ -z "$app_command" ]]; then
+        echo -e "${RED}[ERROR]${NC} No application specified"
+        return
+    fi
+    
+    echo -e "${BLUE}[INFO]${NC} Security level for $app_command:"
+    echo "1) Basic (minimal restrictions)"
+    echo "2) Standard (balanced security)"
+    echo "3) High (maximum security)"
+    echo "4) Custom (choose options)"
+    echo -n -e "${YELLOW}Choose security level [1-4]: ${NC}"
+    read -r security_level
+    
+    local firejail_opts
+    case $security_level in
+        1)
+            firejail_opts="--private-tmp"
+            ;;
+        2)
+            firejail_opts="--private-tmp --private-dev --noroot --seccomp"
+            ;;
+        3)
+            firejail_opts="--private-tmp --private-dev --private-cache --noroot --nosound --no3d --seccomp --caps.drop=all --nonewprivs"
+            ;;
+        4)
+            configure_custom_options
+            firejail_opts="$CUSTOM_OPTS"
+            ;;
+        *)
+            firejail_opts="--private-tmp --private-dev --noroot --seccomp"
+            ;;
+    esac
+    
+    echo -e "${BLUE}[INFO]${NC} Launching $app_command with security level $security_level..."
+    log_message "Custom application $app_command sandbox launched with options: $firejail_opts"
+    
+    firejail $firejail_opts $app_command &
+    
+    echo -e "${GREEN}✓${NC} $app_command launched in sandbox"
+}
+
+# Configure custom sandbox options
+configure_custom_options() {
+    CUSTOM_OPTS=""
+    
+    echo -e "${CYAN}Custom Sandbox Configuration:${NC}"
+    
+    echo -n -e "${YELLOW}Enable private /tmp? (y/n): ${NC}"
+    read -r private_tmp
+    [[ "$private_tmp" == "y" ]] && CUSTOM_OPTS+=" --private-tmp"
+    
+    echo -n -e "${YELLOW}Enable private /dev? (y/n): ${NC}"
+    read -r private_dev
+    [[ "$private_dev" == "y" ]] && CUSTOM_OPTS+=" --private-dev"
+    
+    echo -n -e "${YELLOW}Disable network access? (y/n): ${NC}"
+    read -r no_network
+    [[ "$no_network" == "y" ]] && CUSTOM_OPTS+=" --net=none"
+    
+    echo -n -e "${YELLOW}Disable sound access? (y/n): ${NC}"
+    read -r no_sound
+    [[ "$no_sound" == "y" ]] && CUSTOM_OPTS+=" --nosound"
+    
+    echo -n -e "${YELLOW}Enable seccomp filtering? (y/n): ${NC}"
+    read -r seccomp
+    [[ "$seccomp" == "y" ]] && CUSTOM_OPTS+=" --seccomp"
+    
+    echo -n -e "${YELLOW}Drop all capabilities? (y/n): ${NC}"
+    read -r drop_caps
+    [[ "$drop_caps" == "y" ]] && CUSTOM_OPTS+=" --caps.drop=all"
+    
+    echo -n -e "${YELLOW}Disable root access? (y/n): ${NC}"
+    read -r no_root
+    [[ "$no_root" == "y" ]] && CUSTOM_OPTS+=" --noroot"
+}
+
+# Open document safely
+open_document() {
+    echo -n -e "${YELLOW}Enter path to document: ${NC}"
+    read -r doc_path
+    
+    if [[ ! -f "$doc_path" ]]; then
+        echo -e "${RED}[ERROR]${NC} File not found: $doc_path"
+        return
+    fi
+    
+    local file_type=$(file --mime-type -b "$doc_path")
+    echo -e "${BLUE}[INFO]${NC} Detected file type: $file_type"
+    
+    local app_command
+    case $file_type in
+        application/pdf)
+            app_command="evince"
+            ;;
+        application/vnd.openxmlformats-officedocument.*|application/vnd.oasis.opendocument.*)
+            app_command="libreoffice"
+            ;;
+        text/*)
+            app_command="gedit"
+            ;;
+        image/*)
+            app_command="eog"
+            ;;
+        *)
+            echo -n -e "${YELLOW}Unknown file type. Enter application to open with: ${NC}"
+            read -r app_command
+            ;;
+    esac
+    
+    echo -e "${BLUE}[INFO]${NC} Opening $doc_path with $app_command in sandbox..."
+    log_message "Document $doc_path opened with $app_command in sandbox"
+    
+    # Create a secure sandbox for document viewing
+    firejail --private-tmp \
+             --private-dev \
+             --private-cache \
+             --noroot \
+             --nosound \
+             --no3d \
+             --seccomp \
+             --caps.drop=all \
+             --nonewprivs \
+             --read-only="$(dirname "$doc_path")" \
+             $app_command "$doc_path" &
+    
+    echo -e "${GREEN}✓${NC} Document opened safely in sandbox"
+}
+
+# List active sandboxes
+list_active_sandboxes() {
+    echo -e "${BLUE}[INFO]${NC} Active Firejail Sandboxes:"
+    echo -e "${WHITE}═══════════════════════════════════════════════════════════════════════════════${NC}"
+    
+    firejail --list 2>/dev/null || echo "  No active sandboxes found"
+    echo
+}
+
+# List available profiles
+list_profiles() {
+    echo -e "${BLUE}[INFO]${NC} Available Firejail Profiles:"
+    echo -e "${WHITE}═══════════════════════════════════════════════════════════════════════════════${NC}"
+    
+    echo -e "${CYAN}System Profiles:${NC}"
+    if [[ -d "$FIREJAIL_PROFILES_DIR" ]]; then
+        ls -1 "$FIREJAIL_PROFILES_DIR"/*.profile 2>/dev/null | xargs -I {} basename {} .profile | sed 's/^/  /' || echo "  No system profiles found"
+    fi
+    
+    echo
+    echo -e "${CYAN}User Profiles:${NC}"
+    if [[ -d "$CUSTOM_PROFILES_DIR" ]]; then
+        ls -1 "$CUSTOM_PROFILES_DIR"/*.profile 2>/dev/null | xargs -I {} basename {} .profile | sed 's/^/  /' || echo "  No user profiles found"
+    else
+        echo "  No user profile directory found"
+    fi
+    echo
+}
+
+# Create custom profile
+create_custom_profile() {
+    echo -n -e "${YELLOW}Enter profile name: ${NC}"
+    read -r profile_name
+    
+    if [[ -z "$profile_name" ]]; then
+        echo -e "${RED}[ERROR]${NC} Profile name cannot be empty"
+        return
+    fi
+    
+    # Create user profile directory if it doesn't exist
+    mkdir -p "$CUSTOM_PROFILES_DIR"
+    
+    local profile_file="$CUSTOM_PROFILES_DIR/${profile_name}.profile"
+    
+    echo -e "${BLUE}[INFO]${NC} Creating custom profile: $profile_name"
+    
+    cat > "$profile_file" <<EOF
+# Custom Firejail Profile: $profile_name
+# Created: $(date)
+# Author: Fangbull Jails Manager
+
+# Basic security settings
+include disable-common.inc
+include disable-devel.inc
+include disable-interpreters.inc
+include disable-programs.inc
+
+# Network restrictions
+netfilter
+
+# Filesystem restrictions
+private-tmp
+private-dev
+private-cache
+
+# Security enhancements
+noroot
+seccomp
+caps.drop all
+nonewprivs
+
+# Disable unnecessary features
+nosound
+no3d
+nodvd
+notv
+nou2f
+novideo
+
+# Memory and process restrictions
+rlimit-nproc 100
+rlimit-fsize 1073741824
+
+# Add custom restrictions below:
+# Example: blacklist /home/user/sensitive
+# Example: read-only /etc
+EOF
+    
+    echo -e "${GREEN}✓${NC} Custom profile created: $profile_file"
+    echo -e "${BLUE}[INFO]${NC} You can edit this profile manually or use option 17"
+    log_message "Custom profile created: $profile_name"
+}
+
+# Security audit report
+security_audit() {
+    echo -e "${BLUE}[INFO]${NC} Firejail Security Audit Report:"
+    echo -e "${WHITE}═══════════════════════════════════════════════════════════════════════════════${NC}"
+    
+    echo -e "${CYAN}Firejail Installation:${NC}"
+    if command -v firejail >/dev/null 2>&1; then
+        echo -e "  Status: ${GREEN}✓ Installed${NC}"
+        echo "  Version: $(firejail --version | head -1)"
+    else
+        echo -e "  Status: ${RED}✗ Not Installed${NC}"
+    fi
+    
+    echo
+    echo -e "${CYAN}Active Sandboxes:${NC}"
+    local active_count=$(firejail --list 2>/dev/null | wc -l)
+    echo "  Count: $active_count"
+    
+    echo
+    echo -e "${CYAN}Available Profiles:${NC}"
+    local system_profiles=$(ls -1 "$FIREJAIL_PROFILES_DIR"/*.profile 2>/dev/null | wc -l)
+    local user_profiles=$(ls -1 "$CUSTOM_PROFILES_DIR"/*.profile 2>/dev/null | wc -l)
+    echo "  System Profiles: $system_profiles"
+    echo "  User Profiles: $user_profiles"
+    
+    echo
+    echo -e "${CYAN}Security Features:${NC}"
+    echo "  Seccomp: $(firejail --help | grep -q seccomp && echo 'Available' || echo 'Not Available')"
+    echo "  AppArmor: $(firejail --help | grep -q apparmor && echo 'Available' || echo 'Not Available')"
+    echo "  User Namespaces: $(firejail --help | grep -q 'user namespace' && echo 'Available' || echo 'Not Available')"
+    
+    echo
+}
+
+# Main function
+main() {
+    check_firejail
+    
+    # Create log file if it doesn't exist
+    touch "$LOG_FILE"
+    
+    log_message "Fangbull Firejail Manager started"
+    
+    while true; do
+        print_header
+        show_menu
+        
+        echo -n -e "${YELLOW}Enter your choice [0-27]: ${NC}"
+        read -r choice
+        
+        case $choice in
+            1)
+                print_header
+                launch_firefox
+                ;;
+            2)
+                print_header
+                launch_editor
+                ;;
+            3)
+                print_header
+                echo -e "${BLUE}[INFO]${NC} Launching file manager in sandbox..."
+                firejail --private-tmp --private-dev --noroot --seccomp thunar &
+                echo -e "${GREEN}✓${NC} File manager launched in sandbox"
+                ;;
+            4)
+                print_header
+                echo -e "${BLUE}[INFO]${NC} Launching terminal in sandbox..."
+                firejail --private-tmp --private-dev --noroot --seccomp xfce4-terminal &
+                echo -e "${GREEN}✓${NC} Terminal launched in sandbox"
+                ;;
+            5)
+                print_header
+                launch_custom_app
+                ;;
+            11)
+                print_header
+                open_document
+                ;;
+            15)
+                print_header
+                list_profiles
+                ;;
+            16)
+                print_header
+                create_custom_profile
+                ;;
+            20)
+                print_header
+                list_active_sandboxes
+                ;;
+            24)
+                print_header
+                security_audit
+                ;;
+            0)
+                echo -e "${GREEN}Goodbye!${NC}"
+                log_message "Fangbull Firejail Manager session ended"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Invalid option. Please try again.${NC}"
+                ;;
+        esac
+        
+        echo
+        echo -n -e "${YELLOW}Press Enter to continue...${NC}"
+        read -r
+    done
+}
+
+# Run main function
+main "$@"

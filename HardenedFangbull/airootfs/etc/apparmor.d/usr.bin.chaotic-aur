@@ -1,0 +1,34 @@
+# AppArmor profile for chaotic-aur (AUR helper)
+# This profile DENIES execution of chaotic-aur for security reasons
+# AUR packages can contain malware and supply chain attacks
+# Author: root0emir
+# Last Modified: 2025-01-08
+
+#include <tunables/global>
+
+/usr/bin/chaotic-aur {
+  #include <abstractions/base>
+  
+  # DENY ALL ACCESS - Security hardening
+  # AUR helpers pose security risks due to:
+  # - Unvetted packages from AUR
+  # - Supply chain attack vectors
+  # - Malware distribution through AUR packages
+  
+  deny /** rwklmx,
+  deny /usr/bin/chaotic-aur x,
+  
+  # Log denial attempts
+  audit deny /** rwklmx,
+  
+  # Explicit denial message
+  /dev/null w,
+  /usr/bin/echo Cx -> echo_denial,
+  
+  profile echo_denial {
+    #include <abstractions/base>
+    /usr/bin/echo mr,
+    /dev/stdout w,
+    /dev/stderr w,
+  }
+}

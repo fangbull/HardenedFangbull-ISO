@@ -1,0 +1,92 @@
+#include <tunables/global>
+
+/usr/local/bin/fangbull-crypt {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability dac_override,
+
+  /usr/local/bin/fangbull-crypt r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Age encryption binaries
+  /usr/bin/age ix,
+  /usr/bin/age-keygen ix,
+  /usr/sbin/age ix,
+  /usr/sbin/age-keygen ix,
+
+  # User home directory for key storage
+  owner @{HOME}/.fangbull/ rw,
+  owner @{HOME}/.fangbull/** rw,
+
+  # Temporary files for encryption/decryption
+  /tmp/ r,
+  /tmp/** rw,
+  owner /tmp/age-* rw,
+
+  # System random devices for key generation
+  /dev/random r,
+  /dev/urandom rw,
+
+  # File operations - allow access to user files
+  owner @{HOME}/ r,
+  owner @{HOME}/** rw,
+  /home/*/ r,
+  /home/*/** rw,
+
+  # Common directories for file operations
+  /media/ r,
+  /media/** rw,
+  /mnt/ r,
+  /mnt/** rw,
+  /opt/ r,
+  /opt/** rw,
+
+  # Logging
+  /var/log/fangbull-crypt.log w,
+  /dev/log w,
+
+  # System utilities for secure delete
+  /bin/dd ix,
+  /usr/bin/dd ix,
+  /bin/rm ix,
+  /usr/bin/rm ix,
+  /usr/bin/du ix,
+  /bin/du ix,
+
+  # Terminal and console access
+  /dev/tty rw,
+  /dev/tty* rw,
+  /dev/pts/* rw,
+  /dev/console rw,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+  /lib/x86_64-linux-gnu/** mr,
+  /usr/lib64/** mr,
+  /lib64/** mr,
+
+  # Common system files
+  /etc/nsswitch.conf r,
+  /etc/passwd r,
+  /etc/group r,
+
+  # Process information
+  /proc/sys/kernel/random/uuid r,
+
+  # Deny dangerous operations
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny /etc/passwd w,
+  deny /etc/shadow rw,
+  deny /etc/group w,
+  deny /boot/** rw,
+  deny /sys/kernel/** w,
+  deny /proc/sys/** w,
+
+  # Network access denied for security
+  deny network,
+}

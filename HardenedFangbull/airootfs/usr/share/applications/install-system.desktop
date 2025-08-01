@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Install Hardened Fangbull
+GenericName=System Installer
+Comment=Install the system to your hard drive
+Exec=/usr/local/bin/hardened-fangbull-installer
+Icon=/usr/share/icons/fangbull/install.png
+Terminal=false
+Categories=System;
+StartupNotify=true

@@ -1,0 +1,29 @@
+[Unit]
+Description=Permission System Hardening Service
+After=network.target
+
+[Service]
+# --- Hardening directives ---
+# Ensure service runs in a minimal, read-only environment
+ProtectSystem=strict
+ReadWritePaths=/etc /var/log
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+# --- End hardening directives ---
+Type=oneshot
+ExecStart=/usr/bin/permissionhardening
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target 

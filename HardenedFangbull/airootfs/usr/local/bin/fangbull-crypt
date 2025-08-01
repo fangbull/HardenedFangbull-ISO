@@ -1,0 +1,434 @@
+#!/bin/bash
+
+# Fangbull Crypt - Encryption Tool
+# Uses age encryption for secure file and message encryption
+# Part of HardenedFangbull Security Suite
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Configuration
+FANGBULL_KEYDIR="$HOME/.fangbull/keys"
+FANGBULL_LOGFILE="/var/log/fangbull-crypt.log"
+
+# Ensure required directories exist
+mkdir -p "$FANGBULL_KEYDIR"
+
+# Logging function
+log_action() {
+    local action="$1"
+    local details="$2"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $action: $details" >> "$FANGBULL_LOGFILE" 2>/dev/null || true
+}
+
+# Check if age is installed
+check_age() {
+    if ! command -v age >/dev/null 2>&1; then
+        echo -e "${RED}[ERROR]${NC} age encryption tool is not installed."
+        echo -e "${YELLOW}Please install age: pacman -S age${NC}"
+        exit 1
+    fi
+    if ! command -v age-keygen >/dev/null 2>&1; then
+        echo -e "${RED}[ERROR]${NC} age-keygen is not available."
+        exit 1
+    fi
+}
+
+# Display banner
+show_banner() {
+    clear
+    echo -e "${PURPLE}"
+    echo "  ███████╗ █████╗ ███╗   ██╗ ██████╗ ██████╗ ██╗   ██╗██╗     ██╗"
+    echo "  ██╔════╝██╔══██╗████╗  ██║██╔════╝ ██╔══██╗██║   ██║██║     ██║"
+    echo "  █████╗  ███████║██╔██╗ ██║██║  ███╗██████╔╝██║   ██║██║     ██║"
+    echo "  ██╔══╝  ██╔══██║██║╚██╗██║██║   ██║██╔══██╗██║   ██║██║     ██║"
+    echo "  ██║     ██║  ██║██║ ╚████║╚██████╔╝██████╔╝╚██████╔╝███████╗███████╗"
+    echo "  ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝"
+    echo -e "${NC}"
+    echo -e "${CYAN}                   Fangbull Crypt Encryption Tool${NC}"
+    echo -e "${BLUE}                                 HardenedFangbull${NC}"
+    echo ""
+}
+
+# Generate new age key pair
+generate_keypair() {
+    echo -e "${YELLOW}[INFO]${NC} Generating new age key pair..."
+    
+    read -p "Enter a name for this key pair: " keyname
+    if [[ -z "$keyname" ]]; then
+        echo -e "${RED}[ERROR]${NC} Key name cannot be empty."
+        return 1
+    fi
+    
+    # Sanitize keyname
+    keyname=$(echo "$keyname" | tr -cd '[:alnum:]_-')
+    
+    local private_key="$FANGBULL_KEYDIR/${keyname}_private.key"
+    local public_key="$FANGBULL_KEYDIR/${keyname}_public.key"
+    
+    if [[ -f "$private_key" ]]; then
+        echo -e "${RED}[ERROR]${NC} Key pair with name '$keyname' already exists."
+        return 1
+    fi
+    
+    # Generate key pair
+    age-keygen -o "$private_key" 2>/dev/null
+    
+    # Extract public key
+    grep "public key:" "$private_key" | cut -d' ' -f4 > "$public_key"
+    
+    # Set secure permissions
+    chmod 600 "$private_key"
+    chmod 644 "$public_key"
+    
+    echo -e "${GREEN}[SUCCESS]${NC} Key pair generated successfully!"
+    echo -e "${CYAN}Private key:${NC} $private_key"
+    echo -e "${CYAN}Public key:${NC} $public_key"
+    echo -e "${CYAN}Public key content:${NC} $(cat "$public_key")"
+    
+    log_action "KEY_GENERATION" "Generated key pair: $keyname"
+}
+
+# List available keys
+list_keys() {
+    echo -e "${YELLOW}[INFO]${NC} Available key pairs:"
+    echo ""
+    
+    local found_keys=false
+    for private_key in "$FANGBULL_KEYDIR"/*_private.key; do
+        if [[ -f "$private_key" ]]; then
+            found_keys=true
+            local keyname=$(basename "$private_key" _private.key)
+            local public_key="$FANGBULL_KEYDIR/${keyname}_public.key"
+            
+            echo -e "${CYAN}Key Name:${NC} $keyname"
+            echo -e "${BLUE}  Private Key:${NC} $private_key"
+            echo -e "${BLUE}  Public Key:${NC} $public_key"
+            if [[ -f "$public_key" ]]; then
+                echo -e "${BLUE}  Public Key Content:${NC} $(cat "$public_key")"
+            fi
+            echo ""
+        fi
+    done
+    
+    if [[ "$found_keys" == false ]]; then
+        echo -e "${YELLOW}No key pairs found. Generate one first.${NC}"
+    fi
+}
+
+# Encrypt file
+encrypt_file() {
+    echo -e "${YELLOW}[INFO]${NC} File Encryption"
+    
+    read -p "Enter path to file to encrypt: " input_file
+    if [[ ! -f "$input_file" ]]; then
+        echo -e "${RED}[ERROR]${NC} File does not exist: $input_file"
+        return 1
+    fi
+    
+    read -p "Enter output path (leave empty for .age extension): " output_file
+    if [[ -z "$output_file" ]]; then
+        output_file="${input_file}.age"
+    fi
+    
+    echo ""
+    echo "Choose encryption method:"
+    echo "1. Use existing public key"
+    echo "2. Use passphrase"
+    read -p "Enter choice [1-2]: " encrypt_method
+    
+    case $encrypt_method in
+        1)
+            list_keys
+            read -p "Enter key name to use: " keyname
+            local public_key="$FANGBULL_KEYDIR/${keyname}_public.key"
+            
+            if [[ ! -f "$public_key" ]]; then
+                echo -e "${RED}[ERROR]${NC} Public key not found: $public_key"
+                return 1
+            fi
+            
+            age -r "$(cat "$public_key")" -o "$output_file" "$input_file"
+            log_action "FILE_ENCRYPT_KEY" "Encrypted $input_file -> $output_file using key $keyname"
+            ;;
+        2)
+            age -p -o "$output_file" "$input_file"
+            log_action "FILE_ENCRYPT_PASS" "Encrypted $input_file -> $output_file using passphrase"
+            ;;
+        *)
+            echo -e "${RED}[ERROR]${NC} Invalid choice."
+            return 1
+            ;;
+    esac
+    
+    echo -e "${GREEN}[SUCCESS]${NC} File encrypted successfully!"
+    echo -e "${CYAN}Encrypted file:${NC} $output_file"
+}
+
+# Decrypt file
+decrypt_file() {
+    echo -e "${YELLOW}[INFO]${NC} File Decryption"
+    
+    read -p "Enter path to encrypted file: " input_file
+    if [[ ! -f "$input_file" ]]; then
+        echo -e "${RED}[ERROR]${NC} File does not exist: $input_file"
+        return 1
+    fi
+    
+    read -p "Enter output path (leave empty to remove .age extension): " output_file
+    if [[ -z "$output_file" ]]; then
+        if [[ "$input_file" == *.age ]]; then
+            output_file="${input_file%.age}"
+        else
+            output_file="${input_file}.decrypted"
+        fi
+    fi
+    
+    echo ""
+    echo "Choose decryption method:"
+    echo "1. Use private key"
+    echo "2. Use passphrase"
+    read -p "Enter choice [1-2]: " decrypt_method
+    
+    case $decrypt_method in
+        1)
+            list_keys
+            read -p "Enter key name to use: " keyname
+            local private_key="$FANGBULL_KEYDIR/${keyname}_private.key"
+            
+            if [[ ! -f "$private_key" ]]; then
+                echo -e "${RED}[ERROR]${NC} Private key not found: $private_key"
+                return 1
+            fi
+            
+            age -d -i "$private_key" -o "$output_file" "$input_file"
+            log_action "FILE_DECRYPT_KEY" "Decrypted $input_file -> $output_file using key $keyname"
+            ;;
+        2)
+            age -d -o "$output_file" "$input_file"
+            log_action "FILE_DECRYPT_PASS" "Decrypted $input_file -> $output_file using passphrase"
+            ;;
+        *)
+            echo -e "${RED}[ERROR]${NC} Invalid choice."
+            return 1
+            ;;
+    esac
+    
+    echo -e "${GREEN}[SUCCESS]${NC} File decrypted successfully!"
+    echo -e "${CYAN}Decrypted file:${NC} $output_file"
+}
+
+# Encrypt text message
+encrypt_message() {
+    echo -e "${YELLOW}[INFO]${NC} Message Encryption"
+    
+    echo "Choose encryption method:"
+    echo "1. Use existing public key"
+    echo "2. Use passphrase"
+    read -p "Enter choice [1-2]: " encrypt_method
+    
+    echo ""
+    echo "Enter your message (press Ctrl+D when finished):"
+    local message
+    message=$(cat)
+    
+    case $encrypt_method in
+        1)
+            list_keys
+            read -p "Enter key name to use: " keyname
+            local public_key="$FANGBULL_KEYDIR/${keyname}_public.key"
+            
+            if [[ ! -f "$public_key" ]]; then
+                echo -e "${RED}[ERROR]${NC} Public key not found: $public_key"
+                return 1
+            fi
+            
+            echo -e "${GREEN}[ENCRYPTED MESSAGE]${NC}"
+            echo "$message" | age -r "$(cat "$public_key")"
+            log_action "MESSAGE_ENCRYPT_KEY" "Encrypted message using key $keyname"
+            ;;
+        2)
+            echo -e "${GREEN}[ENCRYPTED MESSAGE]${NC}"
+            echo "$message" | age -p
+            log_action "MESSAGE_ENCRYPT_PASS" "Encrypted message using passphrase"
+            ;;
+        *)
+            echo -e "${RED}[ERROR]${NC} Invalid choice."
+            return 1
+            ;;
+    esac
+}
+
+# Decrypt text message
+decrypt_message() {
+    echo -e "${YELLOW}[INFO]${NC} Message Decryption"
+    
+    echo "Choose decryption method:"
+    echo "1. Use private key"
+    echo "2. Use passphrase"
+    read -p "Enter choice [1-2]: " decrypt_method
+    
+    echo ""
+    echo "Paste encrypted message (press Ctrl+D when finished):"
+    local encrypted_message
+    encrypted_message=$(cat)
+    
+    case $decrypt_method in
+        1)
+            list_keys
+            read -p "Enter key name to use: " keyname
+            local private_key="$FANGBULL_KEYDIR/${keyname}_private.key"
+            
+            if [[ ! -f "$private_key" ]]; then
+                echo -e "${RED}[ERROR]${NC} Private key not found: $private_key"
+                return 1
+            fi
+            
+            echo -e "${GREEN}[DECRYPTED MESSAGE]${NC}"
+            echo "$encrypted_message" | age -d -i "$private_key"
+            log_action "MESSAGE_DECRYPT_KEY" "Decrypted message using key $keyname"
+            ;;
+        2)
+            echo -e "${GREEN}[DECRYPTED MESSAGE]${NC}"
+            echo "$encrypted_message" | age -d
+            log_action "MESSAGE_DECRYPT_PASS" "Decrypted message using passphrase"
+            ;;
+        *)
+            echo -e "${RED}[ERROR]${NC} Invalid choice."
+            return 1
+            ;;
+    esac
+}
+
+# Secure delete function
+secure_delete() {
+    echo -e "${YELLOW}[INFO]${NC} Secure File Deletion"
+    
+    read -p "Enter path to file to securely delete: " target_file
+    if [[ ! -f "$target_file" ]]; then
+        echo -e "${RED}[ERROR]${NC} File does not exist: $target_file"
+        return 1
+    fi
+    
+    echo -e "${RED}[WARNING]${NC} This will permanently delete the file: $target_file"
+    read -p "Are you sure? (yes/no): " confirm
+    
+    if [[ "$confirm" == "yes" ]]; then
+        # Overwrite with random data multiple times
+        for i in {1..3}; do
+            dd if=/dev/urandom of="$target_file" bs=1024 count=$(du -k "$target_file" | cut -f1) 2>/dev/null || true
+        done
+        rm -f "$target_file"
+        echo -e "${GREEN}[SUCCESS]${NC} File securely deleted."
+        log_action "SECURE_DELETE" "Securely deleted file: $target_file"
+    else
+        echo -e "${YELLOW}[CANCELLED]${NC} File deletion cancelled."
+    fi
+}
+
+# Show help
+show_help() {
+    echo -e "${CYAN}Fangbull Crypt - Advanced Encryption Tool${NC}"
+    echo ""
+    echo "This tool provides secure encryption and decryption using the age encryption tool."
+    echo ""
+    echo -e "${YELLOW}Features:${NC}"
+    echo "• Generate age key pairs"
+    echo "• Encrypt/decrypt files using public key or passphrase"
+    echo "• Encrypt/decrypt text messages"
+    echo "• Secure file deletion"
+    echo "• Comprehensive logging"
+    echo ""
+    echo -e "${YELLOW}Security Notes:${NC}"
+    echo "• Private keys are stored with 600 permissions"
+    echo "• All operations are logged for audit purposes"
+    echo "• Secure deletion overwrites files multiple times"
+    echo "• Uses industry-standard age encryption"
+    echo ""
+    echo -e "${YELLOW}Key Storage:${NC} $FANGBULL_KEYDIR"
+    echo -e "${YELLOW}Log File:${NC} $FANGBULL_LOGFILE"
+}
+
+# Main menu
+show_menu() {
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}                        MAIN MENU${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${GREEN}Key Management:${NC}"
+    echo "  1. Generate new key pair"
+    echo "  2. List existing keys"
+    echo ""
+    echo -e "${GREEN}File Operations:${NC}"
+    echo "  3. Encrypt file"
+    echo "  4. Decrypt file"
+    echo ""
+    echo -e "${GREEN}Message Operations:${NC}"
+    echo "  5. Encrypt message"
+    echo "  6. Decrypt message"
+    echo ""
+    echo -e "${GREEN}Security:${NC}"
+    echo "  7. Secure delete file"
+    echo ""
+    echo -e "${GREEN}Information:${NC}"
+    echo "  8. Show help"
+    echo "  9. Exit"
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+}
+
+# Main function
+main() {
+    # Check if running as root (not recommended for key operations)
+    if [[ $EUID -eq 0 ]]; then
+        echo -e "${YELLOW}[WARNING]${NC} Running as root. Consider using a regular user for key operations."
+        sleep 2
+    fi
+    
+    # Check dependencies
+    check_age
+    
+    # Main loop
+    while true; do
+        show_banner
+        show_menu
+        
+        read -p "Enter your choice [1-9]: " choice
+        echo ""
+        
+        case $choice in
+            1) generate_keypair ;;
+            2) list_keys ;;
+            3) encrypt_file ;;
+            4) decrypt_file ;;
+            5) encrypt_message ;;
+            6) decrypt_message ;;
+            7) secure_delete ;;
+            8) show_help ;;
+            9) 
+                echo -e "${GREEN}Thank you for using Fangbull Crypt!${NC}"
+                log_action "EXIT" "User exited application"
+                exit 0
+                ;;
+            *) 
+                echo -e "${RED}[ERROR]${NC} Invalid choice. Please try again."
+                ;;
+        esac
+        
+        echo ""
+        read -p "Press Enter to continue..."
+    done
+}
+
+# Run main function if script is executed directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

@@ -1,0 +1,51 @@
+#include <tunables/global>
+
+/usr/local/bin/ghost_service_killer {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability dac_override,
+  capability kill,
+  capability sys_ptrace,
+
+  /usr/local/bin/ghost_service_killer r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+  /bin/dash ix,
+  /usr/bin/dash ix,
+
+  # System monitoring access
+  /proc/ r,
+  /proc/*/stat r,
+  /proc/*/status r,
+  /proc/*/cmdline r,
+  /proc/*/comm r,
+  /proc/*/exe r,
+  /proc/sys/kernel/pid_max r,
+
+  # Systemd access
+  /run/systemd/system/ r,
+  /run/systemd/system/* r,
+  /etc/systemd/system/ r,
+  /etc/systemd/system/* r,
+  /usr/lib/systemd/system/ r,
+  /usr/lib/systemd/system/* r,
+
+  # Fangbull IDS logging and data directories
+  /var/log/fangbull-ids/ rw,
+  /var/log/fangbull-ids/** rw,
+  
+  # Logging
+  /var/log/fangbull-ghost-killer.log w,
+  /dev/log w,
+
+  # Common system files
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/libc.so.* mr,
+  /usr/lib/x86_64-linux-gnu/ld-*.so mr,
+
+  # Deny dangerous capabilities
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny capability sys_rawio,
+}

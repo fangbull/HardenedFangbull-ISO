@@ -1,0 +1,60 @@
+#include <tunables/global>
+
+/usr/local/bin/suspicious_cron_dropper_killer {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability dac_override,
+  capability kill,
+  capability sys_ptrace,
+
+  /usr/local/bin/suspicious_cron_dropper_killer r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Cron monitoring access
+  /etc/cron.d/ r,
+  /etc/cron.d/** r,
+  /etc/cron.daily/ r,
+  /etc/cron.daily/** r,
+  /etc/cron.hourly/ r,
+  /etc/cron.hourly/** r,
+  /etc/cron.monthly/ r,
+  /etc/cron.monthly/** r,
+  /etc/cron.weekly/ r,
+  /etc/cron.weekly/** r,
+  /etc/crontab r,
+  /var/spool/cron/ r,
+  /var/spool/cron/** r,
+
+  # Process monitoring
+  /proc/ r,
+  /proc/*/stat r,
+  /proc/*/status r,
+  /proc/*/cmdline r,
+  /proc/*/exe r,
+
+  # Temporary directories monitoring
+  /tmp/ r,
+  /tmp/** r,
+  /var/tmp/ r,
+  /var/tmp/** r,
+
+  # Fangbull IDS logging and data directories
+  /var/log/fangbull-ids/ rw,
+  /var/log/fangbull-ids/** rw,
+  
+  # Logging
+  /var/log/fangbull-cron-dropper-killer.log w,
+  /dev/log w,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+
+  # Deny dangerous operations
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny /etc/passwd w,
+  deny /etc/shadow w,
+}

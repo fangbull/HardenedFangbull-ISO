@@ -1,0 +1,647 @@
+#!/bin/bash
+
+# Memory Resident Process Checker - Hardened Fangbull (Optimized)
+# Advanced detection of memory-resident malicious processes
+# Performance optimized with efficient logging
+
+# Load optimized log manager
+source /usr/local/bin/fangbull-log-manager 2>/dev/null || {
+    echo "Error: fangbull-log-manager not found" >&2
+    exit 1
+}
+
+# Configuration
+LOG_FILE="/var/log/fangbull-ids/process_anomaly.log"
+LOG_MAX_SIZE=5242880  # 5MB max log size
+CACHE_FILE="/var/log/fangbull-ids/process_anomaly.cache"
+MEMORY_DUMP_DIR="/var/log/fangbull-ids/memory_dumps"
+FORENSIC_DIR="/var/log/fangbull-ids/process_forensics"
+SCAN_INTERVAL=60      # Seconds between scans
+THREAT_DB="/var/log/fangbull-ids/memory_threats.db"
+YARA_RULES_DIR="/var/log/fangbull-ids/yara_rules"
+SEVERITY_THRESHOLD=70 # Severity score threshold for action
+
+# Create required directories
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
+mkdir -p "$MEMORY_DUMP_DIR" 2>/dev/null
+mkdir -p "$FORENSIC_DIR" 2>/dev/null
+mkdir -p "$YARA_RULES_DIR" 2>/dev/null
+
+# Rotate log if it exceeds max size
+rotate_log() {
+    if [ -f "$LOG_FILE" ] && [ $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt $LOG_MAX_SIZE ]; then
+        local timestamp=$(date +%Y%m%d%H%M%S)
+        mv "$LOG_FILE" "$LOG_FILE.$timestamp" 2>/dev/null
+        gzip -f "$LOG_FILE.$timestamp" 2>/dev/null
+    fi
+}
+
+log_message() {
+    # Only log critical events
+    if [ "$2" = "CRITICAL" ]; then
+        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] $1" >> "$LOG_FILE"
+        rotate_log
+    fi
+}
+
+# Create basic YARA rules if they don't exist
+create_default_yara_rules() {
+    if [ ! -f "$YARA_RULES_DIR/memory_injections.yar" ]; then
+        cat > "$YARA_RULES_DIR/memory_injections.yar" << 'EOF'
+rule Potential_Shellcode {
+    strings:
+        $shellcode_patterns1 = { 31 c0 50 68 2f 2f 73 68 68 2f 62 69 6e 89 e3 50 }  // /bin/sh shellcode
+        $shellcode_patterns2 = { fc e8 82 00 00 00 60 89 e5 31 c0 64 8b }           // Metasploit pattern
+        $shellcode_patterns3 = { 90 90 90 90 90 90 }                                // NOP sled
+    condition:
+        any of them
+}
+
+rule Potential_Injected_PE {
+    strings:
+        $mz = "MZ"
+        $pe = "PE\x00\x00"
+    condition:
+        $mz at 0 and $pe
+}
+
+rule Potential_Hidden_ELF {
+    strings:
+        $elf_magic = { 7F 45 4C 46 }  // ELF header
+    condition:
+        $elf_magic at 0
+}
+EOF
+    fi
+}
+
+# Cache of known clean processes to avoid repeated checks
+declare -A CLEAN_CACHE
+declare -A ANOMALY_CACHE
+declare -A THREAT_CACHE
+
+# Load cache if it exists
+if [ -f "$CACHE_FILE" ]; then
+    while IFS=: read -r type pid data; do
+        if [ "$type" = "CLEAN" ]; then
+            CLEAN_CACHE["$pid"]="$data"
+        elif [ "$type" = "ANOMALY" ]; then
+            ANOMALY_CACHE["$pid"]="$data"
+        elif [ "$type" = "THREAT" ]; then
+            THREAT_CACHE["$pid"]="$data"
+        fi
+    done < "$CACHE_FILE"
+fi
+
+# Save cache periodically
+save_cache() {
+    # Create temp file first to avoid race conditions
+    local tmp_file=$(mktemp)
+    
+    # Save clean cache (limit to 1000 entries)
+    local count=0
+    for pid in "${!CLEAN_CACHE[@]}"; do
+        if [ $count -lt 1000 ]; then
+            echo "CLEAN:$pid:${CLEAN_CACHE[$pid]}" >> "$tmp_file"
+            count=$((count + 1))
+        fi
+    done
+    
+    # Save anomaly cache (keep all entries)
+    for pid in "${!ANOMALY_CACHE[@]}"; do
+        echo "ANOMALY:$pid:${ANOMALY_CACHE[$pid]}" >> "$tmp_file"
+    done
+    
+    # Save threat cache (keep all entries)
+    for pid in "${!THREAT_CACHE[@]}"; do
+        echo "THREAT:$pid:${THREAT_CACHE[$pid]}" >> "$tmp_file"
+    done
+    
+    # Atomic update
+    mv "$tmp_file" "$CACHE_FILE" 2>/dev/null
+}
+
+# Update threat database
+update_threat_db() {
+    local pid=$1
+    local severity=$2
+    local details=$3
+    local timestamp=$(date -Iseconds)
+    local cmd=$(ps -o cmd= -p "$pid" 2>/dev/null)
+    local user=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+    
+    # Create temp file for atomic write
+    local tmp_file=$(mktemp)
+    
+    # Use jq if available for proper JSON handling
+    if command -v jq >/dev/null 2>&1; then
+        if [ -f "$THREAT_DB" ]; then
+            jq --arg pid "$pid" \
+               --arg cmd "$cmd" \
+               --arg user "$user" \
+               --arg severity "$severity" \
+               --arg details "$details" \
+               --arg time "$timestamp" \
+            '.threats[$pid] = {
+                "command": $cmd,
+                "user": $user,
+                "severity": ($severity|tonumber),
+                "details": $details,
+                "timestamp": $time
+             } | .metadata.last_update = $time' \
+            "$THREAT_DB" > "$tmp_file" 2>/dev/null
+        else
+            echo "{\"threats\":{\"$pid\":{\"command\":\"$cmd\",\"user\":\"$user\",\"severity\":$severity,\"details\":\"$details\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+        fi
+    else
+        # Simple fallback if jq not available
+        echo "{\"threats\":{\"$pid\":{\"command\":\"$cmd\",\"user\":\"$user\",\"severity\":$severity,\"details\":\"$details\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+    fi
+    
+    # Atomic update
+    if [ -s "$tmp_file" ]; then
+        mv "$tmp_file" "$THREAT_DB"
+    else
+        rm -f "$tmp_file"
+    fi
+}
+
+# Advanced process anomaly detection
+check_process_anomalies() {
+    local pid=$1
+    
+    # Skip if process no longer exists
+    if [ ! -e "/proc/$pid" ]; then
+        return 1
+    fi
+    
+    # Skip if we've already checked this process and it was clean
+    local cmd=$(ps -o comm= -p "$pid" 2>/dev/null)
+    local cmdline=$(head -n 1 "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ')
+    local key="${cmd}:${cmdline}"
+    
+    # Use cache to avoid rechecking clean processes
+    if [ -n "${CLEAN_CACHE[$pid]}" ]; then
+        return 1
+    fi
+    
+    # Check if we've already found anomalies in this process
+    if [ -n "${ANOMALY_CACHE[$pid]}" ]; then
+        echo "${ANOMALY_CACHE[$pid]}"
+        return 0
+    fi
+    
+    # Check if we've already identified this as a threat
+    if [ -n "${THREAT_CACHE[$pid]}" ]; then
+        echo "${THREAT_CACHE[$pid]}"
+        return 0
+    fi
+    
+    # Calculate severity score for anomalies
+    local severity=0
+    local details=""
+    
+    # Check if exe link is valid - most critical check
+    if [ -e "/proc/$pid/exe" ]; then
+        local exe_path=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+        if [ -z "$exe_path" ] || [[ "$exe_path" == *"(deleted)"* ]]; then
+            severity=$((severity + 50))
+            details="${details}Deleted executable still running; "
+            
+            # Advanced check: see if we can extract information about the deleted binary
+            local maps_info=$(grep -F "$(basename "$exe_path")" "/proc/$pid/maps" 2>/dev/null | head -1)
+            if [ -n "$maps_info" ]; then
+                details="${details}Maps info: $maps_info; "
+            fi
+        fi
+    fi
+    
+    # Check for hidden process (process name doesn't match executable)
+    local comm=$(cat "/proc/$pid/comm" 2>/dev/null)
+    local exe_name=$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null)
+    if [ -n "$comm" ] && [ -n "$exe_name" ] && [ "$comm" != "$exe_name" ]; then
+        severity=$((severity + 30))
+        details="${details}Process name ($comm) doesn't match executable ($exe_name); "
+    fi
+    
+    # Check if cwd link is valid
+    if [ -e "/proc/$pid/cwd" ]; then
+        local cwd_path=$(readlink -f "/proc/$pid/cwd" 2>/dev/null)
+        if [ -z "$cwd_path" ] || [ ! -d "$cwd_path" ]; then
+            severity=$((severity + 20))
+            details="${details}Invalid working directory; "
+        elif [[ "$cwd_path" == "/tmp"* ]] || [[ "$cwd_path" == "/dev/shm"* ]]; then
+            severity=$((severity + 15))
+            details="${details}Working directory in suspicious location; "
+        fi
+    fi
+    
+    # Check for suspicious environment variables
+    if [ -f "/proc/$pid/environ" ]; then
+        local environ=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null)
+        if [[ "$environ" == *"LD_PRELOAD"* ]]; then
+            severity=$((severity + 40))
+            details="${details}LD_PRELOAD detected; "
+        fi
+        if [[ "$environ" == *"http://"* ]] || [[ "$environ" == *"ftp://"* ]]; then
+            severity=$((severity + 25))
+            details="${details}URL in environment; "
+        fi
+    fi
+    
+    # Check fd directory for anomalies
+    if [ -d "/proc/$pid/fd" ]; then
+        # Count file descriptors
+        local fd_count=$(ls -la /proc/$pid/fd 2>/dev/null | wc -l)
+        
+        # Extremely high number of file descriptors is suspicious
+        if [ "$fd_count" -gt 1000 ]; then
+            severity=$((severity + 15))
+            details="${details}Excessive file descriptors ($fd_count); "
+        fi
+        
+        # Check for suspicious file descriptors
+        if ls -la /proc/$pid/fd 2>/dev/null | grep -q "/dev/sd"; then
+            severity=$((severity + 35))
+            details="${details}Direct disk access detected; "
+        fi
+        
+        # Check for network connections to suspicious ports
+        if ls -la /proc/$pid/fd 2>/dev/null | grep -q "socket"; then
+            if command -v lsof >/dev/null 2>&1; then
+                local suspicious_ports=$(lsof -p "$pid" -i 2>/dev/null | grep -E ':(4444|8080|1080|31337|6666|6667|6668|6669)')
+                if [ -n "$suspicious_ports" ]; then
+                    severity=$((severity + 30))
+                    details="${details}Connection to suspicious port; "
+                fi
+            fi
+        fi
+        
+        # Check for memory-mapped files in suspicious locations
+        if ls -la /proc/$pid/map_files 2>/dev/null | grep -q -E '(/tmp|/dev/shm|/run/shm)'; then
+            severity=$((severity + 25))
+            details="${details}Memory mapped file in suspicious location; "
+        fi
+    fi
+    
+    # Check maps file for suspicious memory mappings
+    if [ -f "/proc/$pid/maps" ]; then
+        # Check for memory regions with both write and execute permissions
+        if grep -q "rw-p.*\[heap\]" "/proc/$pid/maps" 2>/dev/null && 
+           grep -q "r-xp" "/proc/$pid/maps" 2>/dev/null; then
+            severity=$((severity + 35))
+            details="${details}Possible code injection (W+X memory); "
+        fi
+        
+        # Check for anonymous executable memory regions (common in shellcode)
+        if grep -q "rwxp" "/proc/$pid/maps" 2>/dev/null; then
+            severity=$((severity + 45))
+            details="${details}Anonymous executable memory (rwx); "
+            
+            # Perform memory dump for further analysis if severity is high
+            if [ "$severity" -gt 70 ]; then
+                create_memory_dump "$pid"
+            fi
+        fi
+        
+        # Check for suspicious shared memory regions
+        if grep -q -E '(shm|ipc).*rw' "/proc/$pid/maps" 2>/dev/null; then
+            severity=$((severity + 15))
+            details="${details}Suspicious shared memory usage; "
+        fi
+    fi
+    
+    # Check for hidden network connections
+    if [ -f "/proc/$pid/net/tcp" ] && [ -f "/proc/$pid/net/tcp6" ]; then
+        local tcp_connections=$(cat "/proc/$pid/net/tcp" "/proc/$pid/net/tcp6" 2>/dev/null | wc -l)
+        local visible_connections=0
+        
+        if command -v lsof >/dev/null 2>&1; then
+            visible_connections=$(lsof -p "$pid" -i 2>/dev/null | wc -l)
+            
+            # If there's a significant discrepancy, it might be hiding connections
+            if [ "$tcp_connections" -gt $((visible_connections + 5)) ]; then
+                severity=$((severity + 40))
+                details="${details}Hidden network connections detected; "
+            fi
+        fi
+    fi
+    
+    # Check for process ancestry anomalies
+    local ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$ppid" ] && [ "$ppid" -ne 1 ]; then
+        local parent_cmd=$(ps -o comm= -p "$ppid" 2>/dev/null)
+        local parent_user=$(ps -o user= -p "$ppid" 2>/dev/null | tr -d ' ')
+        local current_user=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+        
+        # Check for user mismatch between parent and child
+        if [ "$parent_user" != "$current_user" ] && [ "$current_user" != "root" ]; then
+            severity=$((severity + 25))
+            details="${details}User privilege escalation detected; "
+        fi
+        
+        # Check for suspicious parent-child relationships
+        local suspicious_parents=("apache2" "httpd" "nginx" "php-fpm" "mysqld" "postgres" "sshd")
+        local suspicious_children=("bash" "sh" "nc" "netcat" "python" "perl" "ruby" "nmap" "tcpdump")
+        
+        for sp in "${suspicious_parents[@]}"; do
+            if [ "$parent_cmd" = "$sp" ]; then
+                for sc in "${suspicious_children[@]}"; do
+                    if [ "$cmd" = "$sc" ]; then
+                        severity=$((severity + 35))
+                        details="${details}Suspicious parent-child relationship ($parent_cmd -> $cmd); "
+                        break
+                    fi
+                done
+            fi
+        done
+    fi
+    
+    # Return result based on severity
+    if [ "$severity" -gt 0 ]; then
+        # Cache the results
+        if [ "$severity" -ge "$SEVERITY_THRESHOLD" ]; then
+            THREAT_CACHE["$pid"]="$details"
+            update_threat_db "$pid" "$severity" "$details"
+        } else {
+            ANOMALY_CACHE["$pid"]="$details"
+        }
+        
+        echo "$details:$severity"
+        return 0
+    fi
+    
+    # Cache clean processes to avoid rechecking
+    CLEAN_CACHE["$pid"]=1
+    return 1
+}
+
+# Create memory dump for forensic analysis
+create_memory_dump() {
+    local pid=$1
+    local timestamp=$(date +%Y%m%d%H%M%S)
+    local dump_dir="$MEMORY_DUMP_DIR/pid_${pid}_${timestamp}"
+    
+    mkdir -p "$dump_dir" 2>/dev/null
+    
+    log_message "Creating memory dump for PID $pid in $dump_dir" "CRITICAL"
+    
+    # Save process information
+    ps -p "$pid" -F > "$dump_dir/process_info.txt" 2>/dev/null
+    
+    # Save memory maps
+    cat "/proc/$pid/maps" > "$dump_dir/memory_maps.txt" 2>/dev/null
+    
+    # Save command line and environment
+    cat "/proc/$pid/cmdline" | tr '\0' ' ' > "$dump_dir/cmdline.txt" 2>/dev/null
+    cat "/proc/$pid/environ" | tr '\0' '\n' > "$dump_dir/environ.txt" 2>/dev/null
+    
+    # Save open files
+    ls -la "/proc/$pid/fd/" > "$dump_dir/open_files.txt" 2>/dev/null
+    
+    # Dump memory regions (heap and suspicious regions only to save space)
+    if [ -f "/proc/$pid/maps" ]; then
+        # Extract heap region
+        local heap_region=$(grep -E '\[heap\]' "/proc/$pid/maps" 2>/dev/null | head -1)
+        if [ -n "$heap_region" ]; then
+            if [[ "$heap_region" =~ ^([0-9a-f]+)-([0-9a-f]+) ]]; then
+                local start="0x${BASH_REMATCH[1]}"
+                local end="0x${BASH_REMATCH[2]}"
+                local size=$((end - start))
+                
+                # Only dump reasonable sized regions
+                if [ "$size" -lt 10485760 ]; then  # Max 10MB
+                    dd if="/proc/$pid/mem" bs=4096 skip=$((start / 4096)) count=$((size / 4096)) of="$dump_dir/heap.dump" 2>/dev/null
+                fi
+            fi
+        fi
+        
+        # Extract executable regions with write permissions (potential shellcode)
+        grep -E 'rwxp' "/proc/$pid/maps" 2>/dev/null | head -5 | while read -r region; do
+            if [[ "$region" =~ ^([0-9a-f]+)-([0-9a-f]+) ]]; then
+                local start="0x${BASH_REMATCH[1]}"
+                local end="0x${BASH_REMATCH[2]}"
+                local size=$((end - start))
+                local addr="${BASH_REMATCH[1]}"
+                
+                # Only dump reasonable sized regions
+                if [ "$size" -lt 1048576 ]; then  # Max 1MB
+                    dd if="/proc/$pid/mem" bs=4096 skip=$((start / 4096)) count=$((size / 4096)) of="$dump_dir/rwx_${addr}.dump" 2>/dev/null
+                fi
+            fi
+        done
+    fi
+    
+    # Run YARA scan if available
+    if command -v yara >/dev/null 2>&1 && [ -d "$YARA_RULES_DIR" ]; then
+        for rule_file in "$YARA_RULES_DIR"/*.yar; do
+            if [ -f "$rule_file" ]; then
+                yara -s "$rule_file" "$dump_dir"/*.dump > "$dump_dir/yara_results.txt" 2>/dev/null
+            fi
+        done
+    fi
+    
+    log_message "Memory dump completed for PID $pid" "CRITICAL"
+}
+
+# Take action on suspicious process based on severity
+handle_suspicious_process() {
+    local pid=$1
+    local anomaly_info=$2
+    local user=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+    local cmd=$(ps -o cmd= -p "$pid" 2>/dev/null)
+    
+    # Extract severity from anomaly info
+    local severity=0
+    if [[ "$anomaly_info" == *":"* ]]; then
+        severity=$(echo "$anomaly_info" | awk -F: '{print $NF}')
+        anomaly_info=$(echo "$anomaly_info" | sed "s/:$severity$//")
+    fi
+    
+    # Log based on severity
+    if [ "$severity" -ge 80 ]; then
+        log_message "CRITICAL THREAT: PID=$pid, User=$user, Command=$cmd, Severity=$severity" "CRITICAL"
+        log_message "Threat details: $anomaly_info" "CRITICAL"
+    } elif [ "$severity" -ge "$SEVERITY_THRESHOLD" ]; then
+        log_message "HIGH SEVERITY THREAT: PID=$pid, User=$user, Command=$cmd, Severity=$severity" "CRITICAL"
+        log_message "Threat details: $anomaly_info" "CRITICAL"
+    } else {
+        log_message "Suspicious process: PID=$pid, User=$user, Command=$cmd, Severity=$severity" "CRITICAL"
+    }
+    
+    # Create forensic capture for high severity threats
+    if [ "$severity" -ge "$SEVERITY_THRESHOLD" ]; then
+        local timestamp=$(date +%Y%m%d%H%M%S)
+        local forensic_dir="$FORENSIC_DIR/pid_${pid}_${timestamp}"
+        mkdir -p "$forensic_dir" 2>/dev/null
+        
+        # Save process tree
+        pstree -p "$pid" > "$forensic_dir/process_tree.txt" 2>/dev/null
+        
+        # Save process details
+        ps -p "$pid" -F > "$forensic_dir/process_info.txt" 2>/dev/null
+        
+        # Save open files and connections
+        if command -v lsof >/dev/null 2>&1; then
+            lsof -p "$pid" > "$forensic_dir/open_files.txt" 2>/dev/null
+        fi
+        
+        # Save network connections
+        if command -v ss >/dev/null 2>&1; then
+            ss -p | grep "$pid" > "$forensic_dir/network_connections.txt" 2>/dev/null
+        fi
+        
+        # Create memory dump for advanced analysis
+        create_memory_dump "$pid"
+    }
+    
+    # Take action based on severity
+    if [ "$severity" -ge 80 ]; then
+        # For critical threats, kill the process and its children
+        log_message "Terminating process tree for critical threat PID=$pid" "CRITICAL"
+        pkill -9 -P "$pid" 2>/dev/null  # Kill children first
+        kill -9 "$pid" 2>/dev/null      # Then kill the parent
+    } elif [ "$severity" -ge "$SEVERITY_THRESHOLD" ]; then
+        # For high severity threats, kill non-root processes
+        if [ "$user" != "root" ]; then
+            log_message "Terminating high severity threat process PID=$pid" "CRITICAL"
+            kill -9 "$pid" 2>/dev/null
+        } else {
+            log_message "WARNING: Not terminating root-owned high severity process PID=$pid" "CRITICAL"
+        }
+    }
+    
+    # Remove from anomaly cache if process is killed
+    if ! ps -p "$pid" > /dev/null 2>&1; then
+        unset ANOMALY_CACHE["$pid"]
+    }
+}
+
+# Generate threat intelligence report
+generate_threat_report() {
+    if [ -f "$THREAT_DB" ] && command -v jq >/dev/null 2>&1; then
+        local threat_count=$(jq '.threats | length' "$THREAT_DB" 2>/dev/null)
+        local high_threats=$(jq '.threats | to_entries[] | select(.value.severity >= 70) | .key' "$THREAT_DB" 2>/dev/null | wc -l)
+        
+        log_message "Memory Threat Intelligence Report: Total threats=$threat_count, High severity threats=$high_threats" "CRITICAL"
+        
+        # List top threats
+        local top_threats=$(jq -r '.threats | to_entries | sort_by(.value.severity) | reverse | .[0:5] | .[] | "\(.key):\(.value.command):\(.value.severity):\(.value.details)"' "$THREAT_DB" 2>/dev/null)
+        if [ -n "$top_threats" ]; then
+            log_message "Top memory threats:" "CRITICAL"
+            while IFS=: read -r pid cmd severity details; do
+                log_message "  PID=$pid, Command=$cmd, Severity=$severity" "CRITICAL"
+            done <<< "$top_threats"
+        fi
+    fi
+}
+
+# Periodically clean up caches
+cleanup_caches() {
+    # Clean anomaly cache for non-existent PIDs
+    local stale_pids=()
+    
+    for pid in "${!ANOMALY_CACHE[@]}"; do
+        if [ ! -e "/proc/$pid" ]; then
+            stale_pids+=("$pid")
+        fi
+    done
+    
+    for pid in "${stale_pids[@]}"; do
+        unset ANOMALY_CACHE["$pid"]
+    done
+    
+    # Clean threat cache for non-existent PIDs
+    stale_pids=()
+    
+    for pid in "${!THREAT_CACHE[@]}"; do
+        if [ ! -e "/proc/$pid" ]; then
+            stale_pids+=("$pid")
+        fi
+    done
+    
+    for pid in "${stale_pids[@]}"; do
+        unset THREAT_CACHE["$pid"]
+    done
+    
+    # Reset clean cache periodically to ensure fresh checks
+    CLEAN_CACHE=()
+}
+
+# Main function - enhanced with advanced detection
+main() {
+    log_message "Memory Resident Process Anomaly Checker Professional started" "CRITICAL"
+    
+    # Use lower CPU priority
+    renice 10 $$ > /dev/null 2>&1
+    ionice -c3 -p $$ > /dev/null 2>&1
+    
+    # Create default YARA rules
+    create_default_yara_rules
+    
+    # Counter for maintenance operations
+    local counter=0
+    local report_interval=24  # Generate report every 24 cycles
+    local cleanup_interval=5  # Clean caches every 5 cycles
+    
+    while true; do
+        # Get all running processes - efficient approach
+        local threat_count=0
+        
+        for pid in $(find /proc -maxdepth 1 -regex '/proc/[0-9]+' -printf "%f\n" 2>/dev/null); do
+            # Skip header and non-numeric PIDs
+            if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+                continue
+            fi
+            
+            # Skip kernel processes
+            if [ "$pid" -le 2 ]; then
+                continue
+            fi
+            
+            # Check for anomalies with enhanced detection
+            anomaly_info=$(check_process_anomalies "$pid")
+            if [ $? -eq 0 ]; then
+                handle_suspicious_process "$pid" "$anomaly_info"
+                threat_count=$((threat_count + 1))
+            fi
+        done
+        
+        # Log summary if threats found
+        if [ "$threat_count" -gt 0 ]; then
+            log_message "Scan complete: Detected $threat_count suspicious processes" "CRITICAL"
+        fi
+        
+        # Increment counter and perform maintenance periodically
+        counter=$((counter + 1))
+        
+        # Clean caches periodically
+        if [ $((counter % cleanup_interval)) -eq 0 ]; then
+            cleanup_caches
+        fi
+        
+        # Save cache periodically
+        if [ $((counter % 10)) -eq 0 ]; then
+            save_cache
+        fi
+        
+        # Generate threat report periodically
+        if [ $((counter % report_interval)) -eq 0 ]; then
+            generate_threat_report
+        fi
+        
+        # Use adaptive sleep to reduce system load
+        if [ "$threat_count" -gt 5 ]; then
+            # More frequent checks if many threats detected
+            sleep 30
+        else
+            sleep $SCAN_INTERVAL
+        fi
+    done
+}
+
+# Trap signals for clean exit and reporting
+trap "save_cache; generate_threat_report; log_message 'Memory Resident Process Anomaly Checker Professional stopped' 'CRITICAL'; exit 0" SIGTERM SIGINT
+
+main 

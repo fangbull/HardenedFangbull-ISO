@@ -1,0 +1,17 @@
+root:x:0:root
+sys:x:3:bin,fangbull
+network:x:90:fangbull
+power:x:98:fangbull
+adm:x:999:fangbull
+wheel:x:998:fangbull
+uucp:x:987:fangbull
+optical:x:990:fangbull
+rfkill:x:983:fangbull
+video:x:986:fangbull
+storage:x:988:fangbull
+audio:x:995:fangbull
+users:x:985:fangbull
+nopasswdlogin:x:966:fangbull
+autologin:x:967:fangbull
+fangbull:x:1000:
+

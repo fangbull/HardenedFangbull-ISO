@@ -1,0 +1,389 @@
+#!/bin/bash
+
+# Common Functions for Fangbull-IDS - Hardened Fangbull
+# Shared utility functions to reduce code duplication across scripts
+
+# Global configuration
+SID_LOG_DIR="/var/log/fangbull-ids"
+SID_LOG_MAX_SIZE=5242880  # 5MB max log size
+SID_MAX_BUFFER_SIZE=16384  # Maximum buffer size for commands (16KB)
+
+# Create required directories with secure permissions
+sid_create_directory() {
+    local dir_path="$1"
+    local perms="${2:-750}"  # Default to 750 if not specified
+    
+    if [ -n "$dir_path" ]; then
+        /bin/mkdir -p "$dir_path" 2>/dev/null
+        /bin/chmod "$perms" "$dir_path" 2>/dev/null
+        return $?
+    fi
+    return 1
+}
+
+# Rotate log if it exceeds max size with atomic operations
+sid_rotate_log() {
+    local log_file="$1"
+    local max_size="${2:-$SID_LOG_MAX_SIZE}"
+    
+    if [ -f "$log_file" ] && [ $(/bin/stat -c%s "$log_file" 2>/dev/null || echo 0) -gt "$max_size" ]; then
+        local timestamp=$(/bin/date +%Y%m%d%H%M%S)
+        local backup_file="$log_file.$timestamp"
+        
+        # Use temporary file for atomic operations
+        /bin/cp "$log_file" "$log_file.tmp" 2>/dev/null
+        /bin/mv "$log_file.tmp" "$backup_file" 2>/dev/null
+        
+        # Compress with size limit check
+        if [ -f "$backup_file" ] && [ $(/bin/stat -c%s "$backup_file" 2>/dev/null || echo 0) -lt $(("$max_size"*2)) ]; then
+            /bin/gzip -f "$backup_file" 2>/dev/null
+        fi
+        
+        # Truncate original log file safely
+        : > "$log_file"
+        /bin/chmod 640 "$log_file" 2>/dev/null
+        
+        return 0
+    fi
+    
+    return 1
+}
+
+# Memory-safe logging function
+sid_log_message() {
+    local log_file="$1"
+    local message="$2"
+    local level="$3"
+    
+    # Only log critical events by default
+    if [ "$level" = "CRITICAL" ]; then
+        local timestamp=$(/bin/date '+%Y-%m-%d %H:%M:%S')
+        local safe_message="${message:0:1024}"  # Truncate message to prevent buffer overflow
+        echo "[$timestamp] $safe_message" >> "$log_file"
+        sid_rotate_log "$log_file"
+    fi
+}
+
+# Safe command execution with timeout
+sid_safe_exec() {
+    local timeout_seconds="${1:-10}"
+    local command="$2"
+    
+    if [ -z "$command" ]; then
+        return 1
+    fi
+    
+    # Execute with timeout and capture output safely
+    local output
+    if output=$(/usr/bin/timeout "$timeout_seconds" /bin/bash -c "$command" 2>/dev/null); then
+        echo "${output:0:$SID_MAX_BUFFER_SIZE}"
+        return 0
+    fi
+    
+    return 1
+}
+
+# Check if a PID is valid and exists
+sid_is_valid_pid() {
+    local pid="$1"
+    
+    # Check if PID is numeric
+    if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    
+    # Check if process exists
+    if [ ! -d "/proc/$pid" ]; then
+        return 1
+    fi
+    
+    return 0
+}
+
+# Get process information safely
+sid_get_process_info() {
+    local pid="$1"
+    local info_type="$2"  # cmd, user, ppid, etc.
+    
+    # Validate PID
+    if ! sid_is_valid_pid "$pid"; then
+        return 1
+    fi
+    
+    # Get requested information
+    case "$info_type" in
+        cmd)
+            # Get command line
+            if [ -f "/proc/$pid/cmdline" ]; then
+                /bin/cat "/proc/$pid/cmdline" 2>/dev/null | /usr/bin/tr '\0' ' ' | /usr/bin/head -c 100
+                return $?
+            fi
+            ;;
+        exe)
+            # Get executable path
+            if [ -L "/proc/$pid/exe" ]; then
+                /bin/readlink -f "/proc/$pid/exe" 2>/dev/null
+                return $?
+            fi
+            ;;
+        user)
+            # Get user
+            /bin/ps -o user= -p "$pid" 2>/dev/null | /usr/bin/tr -d ' '
+            return $?
+            ;;
+        ppid)
+            # Get parent PID
+            if [ -f "/proc/$pid/stat" ]; then
+                /usr/bin/awk '{print $4}' "/proc/$pid/stat" 2>/dev/null
+                return $?
+            fi
+            ;;
+        state)
+            # Get process state
+            if [ -f "/proc/$pid/stat" ]; then
+                /usr/bin/awk '{print $3}' "/proc/$pid/stat" 2>/dev/null
+                return $?
+            fi
+            ;;
+        cwd)
+            # Get current working directory
+            if [ -L "/proc/$pid/cwd" ]; then
+                /bin/readlink -f "/proc/$pid/cwd" 2>/dev/null
+                return $?
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    
+    return 1
+}
+
+# Create a memory dump of a process with safety checks
+sid_create_memory_dump() {
+    local pid="$1"
+    local dump_dir="$2"
+    local max_size="${3:-52428800}"  # Default 50MB max
+    
+    # Validate inputs
+    if ! sid_is_valid_pid "$pid" || [ -z "$dump_dir" ]; then
+        return 1
+    fi
+    
+    # Create dump directory with secure permissions
+    local timestamp=$(/bin/date +%Y%m%d%H%M%S)
+    local process_dump_dir="$dump_dir/pid${pid}_$timestamp"
+    sid_create_directory "$process_dump_dir" 750
+    
+    # Check disk space before proceeding
+    local free_space=$(/bin/df -P "$dump_dir" | /usr/bin/awk 'NR==2 {print $4}')
+    if [ "$free_space" -lt 104857600 ]; then  # At least 100MB free
+        return 1
+    fi
+    
+    # Create memory map file with size limit
+    local map_file="$process_dump_dir/memory.map"
+    /usr/bin/head -c 1048576 "/proc/$pid/maps" > "$map_file" 2>/dev/null
+    /bin/chmod 640 "$map_file" 2>/dev/null
+    
+    # Dump memory regions
+    local count=0
+    local total_size=0
+    
+    # Read maps with line limit to prevent memory issues
+    /usr/bin/head -c 1048576 "/proc/$pid/maps" | while read -r line && [ $total_size -lt "$max_size" ]; do
+        # Look for executable or writable+executable regions
+        if [[ "$line" =~ ^([0-9a-f]+)-([0-9a-f]+)\ [r-][w-][x-] ]] || [[ "$line" =~ heap|stack|libc|ld-linux ]]; then
+            local start="0x${BASH_REMATCH[1]}"
+            local end="0x${BASH_REMATCH[2]}"
+            local size=$((end - start))
+            
+            # Only dump reasonably sized regions
+            if [ "$size" -lt 10485760 ] && [ "$size" -gt 4096 ]; then
+                local region_file="$process_dump_dir/region_${count}.dump"
+                
+                # Use timeout to prevent hanging
+                /usr/bin/timeout 5s /bin/dd if="/proc/$pid/mem" bs=4096 skip=$((start / 4096)) count=$((size / 4096)) of="$region_file" 2>/dev/null
+                
+                # Check if dump was successful
+                if [ -f "$region_file" ] && [ -s "$region_file" ]; then
+                    /bin/chmod 640 "$region_file" 2>/dev/null
+                    count=$((count + 1))
+                    total_size=$((total_size + size))
+                    
+                    # Add region info to index
+                    echo "Region $count: $line" >> "$process_dump_dir/regions.txt"
+                else
+                    /bin/rm -f "$region_file" 2>/dev/null
+                fi
+                
+                # Limit number of regions
+                if [ "$count" -ge 8 ]; then
+                    break
+                fi
+            fi
+        fi
+    done
+    
+    # Create summary file
+    {
+        echo "PID: $pid"
+        echo "Dump time: $(/bin/date -Iseconds)"
+        echo "Regions dumped: $count"
+        echo "Total size: $total_size bytes"
+    } > "$process_dump_dir/summary.txt"
+    /bin/chmod 640 "$process_dump_dir/summary.txt" 2>/dev/null
+    
+    return 0
+}
+
+# Set resource limits to prevent memory bloat
+sid_set_resource_limits() {
+    # Virtual memory limit: 100MB
+    ulimit -v 104857600 2>/dev/null
+    
+    # CPU time limit: 1 hour
+    ulimit -t 3600 2>/dev/null
+    
+    # File descriptor limit: 1024
+    ulimit -n 1024 2>/dev/null
+    
+    # Use lower CPU priority and IO priority
+    /usr/bin/renice 10 $$ > /dev/null 2>&1
+    /usr/bin/ionice -c3 -p $$ > /dev/null 2>&1
+}
+
+# Check memory usage and perform cleanup if needed
+sid_check_memory_usage() {
+    local threshold="${1:-40960}"  # Default 40MB threshold
+    
+    # Get current memory usage
+    local mem_usage=$(/bin/ps -o rss= -p $$ 2>/dev/null || echo 0)
+    
+    if [ "$mem_usage" -gt "$threshold" ]; then
+        # Request garbage collection from system
+        sleep 0.1
+        return 0
+    fi
+    
+    return 1
+}
+
+# Safely terminate a process with progressive approach
+sid_terminate_process() {
+    local pid="$1"
+    local force="${2:-0}"  # 1 for force kill, 0 for graceful
+    
+    # Validate PID
+    if ! sid_is_valid_pid "$pid"; then
+        return 1
+    fi
+    
+    if [ "$force" -eq 1 ]; then
+        # Force kill
+        /bin/kill -9 "$pid" 2>/dev/null
+        sleep 0.5
+        return $?
+    else
+        # Try graceful termination first
+        /bin/kill -15 "$pid" 2>/dev/null
+        sleep 1
+        
+        # Check if process still exists
+        if [ -d "/proc/$pid" ]; then
+            # Force kill if still running
+            /bin/kill -9 "$pid" 2>/dev/null
+            sleep 0.5
+        fi
+        
+        # Check if successfully terminated
+        if [ ! -d "/proc/$pid" ]; then
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+# Parallel processing helper
+sid_parallel_process() {
+    local input_list="$1"      # Newline-separated list of items to process
+    local process_func="$2"    # Function to call for each item
+    local max_parallel="${3:-4}" # Maximum number of parallel processes
+    local timeout="${4:-30}"   # Timeout in seconds
+    
+    # Validate inputs
+    if [ -z "$input_list" ] || [ -z "$process_func" ]; then
+        return 1
+    fi
+    
+    # Create a temporary directory for results
+    local tmp_dir=$(mktemp -d)
+    if [ ! -d "$tmp_dir" ]; then
+        return 1
+    fi
+    
+    # Process items in parallel
+    local count=0
+    local active=0
+    local pids=()
+    
+    echo "$input_list" | while read -r item; do
+        # Skip empty items
+        if [ -z "$item" ]; then
+            continue
+        fi
+        
+        # Wait if we've reached max parallel processes
+        if [ $active -ge $max_parallel ]; then
+            # Wait for any child to finish
+            wait -n 2>/dev/null || true
+            active=$((active - 1))
+        fi
+        
+        # Process item in background
+        (
+            # Call the processing function
+            result=$($process_func "$item")
+            echo "$result" > "$tmp_dir/result_$count"
+        ) &
+        
+        # Store PID
+        pids+=($!)
+        active=$((active + 1))
+        count=$((count + 1))
+    done
+    
+    # Wait for all remaining processes to finish
+    for pid in "${pids[@]}"; do
+        wait $pid 2>/dev/null || true
+    done
+    
+    # Collect results
+    local results=""
+    for i in $(seq 0 $((count - 1))); do
+        if [ -f "$tmp_dir/result_$i" ]; then
+            results="$results$(cat "$tmp_dir/result_$i")\n"
+        fi
+    done
+    
+    # Clean up
+    rm -rf "$tmp_dir"
+    
+    # Return results
+    echo -e "$results"
+}
+
+# Export functions
+export -f sid_create_directory
+export -f sid_rotate_log
+export -f sid_log_message
+export -f sid_safe_exec
+export -f sid_is_valid_pid
+export -f sid_get_process_info
+export -f sid_create_memory_dump
+export -f sid_set_resource_limits
+export -f sid_check_memory_usage
+export -f sid_terminate_process
+export -f sid_parallel_process 

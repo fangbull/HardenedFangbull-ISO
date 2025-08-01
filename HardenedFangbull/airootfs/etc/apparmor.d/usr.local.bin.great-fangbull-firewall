@@ -1,0 +1,56 @@
+#include <tunables/global>
+
+/usr/local/bin/great-fangbull-firewall {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability net_admin,
+  capability net_raw,
+  capability dac_override,
+
+  /usr/local/bin/great-fangbull-firewall r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Iptables binaries
+  /usr/bin/iptables ix,
+  /usr/sbin/iptables ix,
+  /sbin/iptables ix,
+  /usr/bin/iptables-save ix,
+  /usr/sbin/iptables-save ix,
+  /sbin/iptables-save ix,
+
+  # Network configuration access
+  /proc/net/ r,
+  /proc/net/** r,
+  /proc/sys/net/ r,
+  /proc/sys/net/** rw,
+
+  # Iptables rules storage
+  /etc/iptables/ rw,
+  /etc/iptables/** rw,
+
+  # Network interface detection
+  /sys/class/net/ r,
+  /sys/class/net/** r,
+
+  # Logging
+  /var/log/fangbull-firewall.log w,
+  /dev/log w,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+  /lib/x86_64-linux-gnu/** mr,
+
+  # Common system files
+  /etc/nsswitch.conf r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+
+  # Deny dangerous operations
+  deny capability sys_module,
+  deny /etc/passwd w,
+  deny /etc/shadow w,
+  deny /boot/** rw,
+}

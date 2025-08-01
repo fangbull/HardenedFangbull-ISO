@@ -1,0 +1,292 @@
+# AppArmor profile for fangbull-jails
+# Firejail sandbox management tool with comprehensive system access
+# Author: root0emir
+# Last Modified: 2025-01-08
+
+#include <tunables/global>
+
+/usr/local/bin/fangbull-jails {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+  #include <abstractions/consoles>
+  #include <abstractions/nameservice>
+  #include <abstractions/X>
+
+  # Capabilities needed for Firejail management
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability fsetid,
+  capability kill,
+  capability setgid,
+  capability setuid,
+  capability sys_ptrace,
+  capability sys_admin,
+  capability net_admin,
+
+  # Network access for applications
+  network inet dgram,
+  network inet stream,
+  network inet6 dgram,
+  network inet6 stream,
+  network unix dgram,
+  network unix stream,
+
+  # Script execution
+  /usr/local/bin/fangbull-jails r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Firejail and related binaries
+  /usr/bin/firejail Cx -> firejail,
+  /usr/bin/systemctl Cx -> systemctl,
+  /usr/bin/ps Cx -> ps,
+  /usr/bin/pgrep Cx -> pgrep,
+  /usr/bin/pkill Cx -> pkill,
+  /usr/bin/file Cx -> file,
+
+  # Applications that can be sandboxed
+  /usr/bin/firefox Cx -> sandboxed_app,
+  /usr/bin/firefox-esr Cx -> sandboxed_app,
+  /usr/bin/chromium Cx -> sandboxed_app,
+  /usr/bin/nano Cx -> sandboxed_app,
+  /usr/bin/vim Cx -> sandboxed_app,
+  /usr/bin/gedit Cx -> sandboxed_app,
+  /usr/bin/mousepad Cx -> sandboxed_app,
+  /usr/bin/thunar Cx -> sandboxed_app,
+  /usr/bin/pcmanfm Cx -> sandboxed_app,
+  /usr/bin/xfce4-terminal Cx -> sandboxed_app,
+  /usr/bin/gnome-terminal Cx -> sandboxed_app,
+  /usr/bin/evince Cx -> sandboxed_app,
+  /usr/bin/libreoffice Cx -> sandboxed_app,
+  /usr/bin/eog Cx -> sandboxed_app,
+  /usr/bin/vlc Cx -> sandboxed_app,
+
+  # Core utilities
+  /usr/bin/cat ix,
+  /usr/bin/grep ix,
+  /usr/bin/sed ix,
+  /usr/bin/awk ix,
+  /usr/bin/cut ix,
+  /usr/bin/head ix,
+  /usr/bin/tail ix,
+  /usr/bin/wc ix,
+  /usr/bin/sort ix,
+  /usr/bin/uniq ix,
+  /usr/bin/date ix,
+  /usr/bin/basename ix,
+  /usr/bin/dirname ix,
+  /usr/bin/mkdir ix,
+  /usr/bin/cp ix,
+  /usr/bin/mv ix,
+  /usr/bin/chmod ix,
+  /usr/bin/chown ix,
+  /usr/bin/ls ix,
+  /usr/bin/find ix,
+  /usr/bin/xargs ix,
+  /usr/bin/touch ix,
+
+  # Firejail profiles and configuration
+  /etc/firejail/ r,
+  /etc/firejail/** r,
+  /home/*/.config/firejail/ rw,
+  /home/*/.config/firejail/** rw,
+  owner /home/*/.config/firejail/ rw,
+  owner /home/*/.config/firejail/** rw,
+
+  # System directories for sandboxing
+  /usr/share/firejail/ r,
+  /usr/share/firejail/** r,
+
+  # Logging
+  /var/log/fangbull-jails.log rw,
+  /var/log/firejail/ r,
+  /var/log/firejail/** r,
+
+  # Temporary files and directories
+  /tmp/ r,
+  /tmp/** rw,
+  /var/tmp/ r,
+  /var/tmp/** rw,
+
+  # Process and system information
+  /proc/ r,
+  /proc/** r,
+  /sys/ r,
+  /sys/** r,
+
+  # User home directories (for file access)
+  /home/ r,
+  /home/*/ r,
+  /home/*/** r,
+  owner /home/*/ r,
+  owner /home/*/** r,
+
+  # X11 and display access
+  /tmp/.X11-unix/ r,
+  /tmp/.X11-unix/* rw,
+  owner /tmp/.X11-unix/* rw,
+
+  # Terminal and console access
+  /dev/tty rw,
+  /dev/tty[0-9]* rw,
+  /dev/pts/[0-9]* rw,
+  /dev/console rw,
+
+  # Standard streams
+  /dev/stdin r,
+  /dev/stdout w,
+  /dev/stderr w,
+  /dev/null rw,
+
+  # Audio and video devices (for multimedia sandboxing)
+  /dev/snd/ r,
+  /dev/snd/** rw,
+  /dev/video* rw,
+  /dev/dri/ r,
+  /dev/dri/** rw,
+
+  # Child profiles for external commands
+  profile firejail {
+    #include <abstractions/base>
+    #include <abstractions/X>
+    #include <abstractions/audio>
+    #include <abstractions/nameservice>
+    
+    /usr/bin/firejail mr,
+    /etc/firejail/** r,
+    /usr/share/firejail/** r,
+    /home/*/.config/firejail/** r,
+    
+    # Allow firejail to execute any program
+    /** ix,
+    
+    # System access for sandboxing
+    /proc/** r,
+    /sys/** r,
+    /dev/** rw,
+    /tmp/** rw,
+    /var/tmp/** rw,
+    
+    # Network capabilities
+    network inet dgram,
+    network inet stream,
+    network inet6 dgram,
+    network inet6 stream,
+    network unix dgram,
+    network unix stream,
+    
+    # Capabilities for sandboxing
+    capability sys_admin,
+    capability sys_chroot,
+    capability setuid,
+    capability setgid,
+    capability dac_override,
+    capability dac_read_search,
+    capability fowner,
+    capability kill,
+    capability net_admin,
+    capability sys_ptrace,
+  }
+
+  profile systemctl {
+    #include <abstractions/base>
+    #include <abstractions/systemd>
+    /usr/bin/systemctl mr,
+    /etc/systemd/system/** r,
+    /run/systemd/system/** r,
+    /proc/1/environ r,
+    /proc/*/stat r,
+    /dev/stdout w,
+    /dev/stderr w,
+    capability sys_admin,
+  }
+
+  profile ps {
+    #include <abstractions/base>
+    /usr/bin/ps mr,
+    /proc/ r,
+    /proc/** r,
+    /dev/stdout w,
+    /dev/stderr w,
+  }
+
+  profile pgrep {
+    #include <abstractions/base>
+    /usr/bin/pgrep mr,
+    /proc/ r,
+    /proc/** r,
+    /dev/stdout w,
+    /dev/stderr w,
+  }
+
+  profile pkill {
+    #include <abstractions/base>
+    /usr/bin/pkill mr,
+    /proc/ r,
+    /proc/** r,
+    /dev/stdout w,
+    /dev/stderr w,
+    capability kill,
+  }
+
+  profile file {
+    #include <abstractions/base>
+    /usr/bin/file mr,
+    /usr/share/misc/magic.mgc r,
+    /etc/magic r,
+    /** r,
+    /dev/stdout w,
+    /dev/stderr w,
+  }
+
+  profile sandboxed_app {
+    #include <abstractions/base>
+    #include <abstractions/X>
+    #include <abstractions/audio>
+    #include <abstractions/nameservice>
+    #include <abstractions/fonts>
+    #include <abstractions/freedesktop.org>
+    
+    # Allow execution of sandboxed applications
+    /usr/bin/* mr,
+    /usr/lib/** mr,
+    /usr/share/** r,
+    
+    # User data access (restricted by firejail)
+    /home/*/ r,
+    /home/*/** r,
+    owner /home/*/ r,
+    owner /home/*/** r,
+    
+    # Temporary access
+    /tmp/** rw,
+    /var/tmp/** rw,
+    
+    # System information
+    /proc/*/stat r,
+    /proc/*/cmdline r,
+    /proc/meminfo r,
+    /proc/cpuinfo r,
+    
+    # Device access
+    /dev/null rw,
+    /dev/zero r,
+    /dev/random r,
+    /dev/urandom r,
+    /dev/tty rw,
+    /dev/pts/* rw,
+    
+    # Network access (controlled by firejail)
+    network inet dgram,
+    network inet stream,
+    network inet6 dgram,
+    network inet6 stream,
+    network unix dgram,
+    network unix stream,
+    
+    # Basic capabilities
+    capability dac_override,
+    capability dac_read_search,
+  }
+}

@@ -1,0 +1,51 @@
+#include <tunables/global>
+
+/usr/local/bin/tty_hijack_detector {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability dac_override,
+  capability sys_ptrace,
+
+  /usr/local/bin/tty_hijack_detector r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # TTY and terminal monitoring
+  /dev/tty* rw,
+  /dev/pts/ r,
+  /dev/pts/* rw,
+  /dev/console rw,
+
+  # Process monitoring for TTY hijacking
+  /proc/ r,
+  /proc/*/stat r,
+  /proc/*/status r,
+  /proc/*/cmdline r,
+  /proc/*/exe r,
+  /proc/*/fd/ r,
+  /proc/*/fd/* r,
+
+  # Session monitoring
+  /run/utmp r,
+  /var/log/wtmp r,
+  /var/log/btmp r,
+
+  # Fangbull IDS logging and data directories
+  /var/log/fangbull-ids/ rw,
+  /var/log/fangbull-ids/** rw,
+  
+  # Logging
+  /var/log/fangbull-tty-hijack-detector.log w,
+  /dev/log w,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+
+  # Deny dangerous operations
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny /etc/passwd w,
+  deny /etc/shadow w,
+}

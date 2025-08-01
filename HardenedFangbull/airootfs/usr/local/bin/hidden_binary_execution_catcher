@@ -1,0 +1,690 @@
+#!/bin/bash
+
+# Hidden Binary Execution Catcher - Hardened Fangbull (Optimized)
+# Advanced detection and prevention of hidden binary execution
+# Performance optimized with efficient logging
+
+# Load optimized log manager
+source /usr/local/bin/fangbull-log-manager 2>/dev/null || {
+    echo "Error: fangbull-log-manager not found" >&2
+    exit 1
+}
+
+# Configuration with optimized settings
+COMPONENT_NAME="hidden_binary"
+CACHE_FILE="/var/log/fangbull-ids/hidden_binary.cache"
+SAMPLE_DIR="/var/log/fangbull-ids/hidden_samples"
+INTEL_DB="/var/log/fangbull-ids/hidden_intel.db"
+SCAN_INTERVAL=60      # Increased from 30 to reduce CPU load
+SEVERITY_THRESHOLD=75 # Reduced from 80 to balance detection
+MAX_CONCURRENT_SCANS=2 # Limit concurrent operations
+
+# Performance counters
+declare -A PERF_COUNTERS=(
+    ["scans_completed"]=0
+    ["threats_detected"]=0
+    ["cache_hits"]=0
+)
+YARA_RULES_DIR="/var/log/fangbull-ids/hidden_binary_rules"
+
+# Create required directories
+mkdir -p "$(dirname "$CACHE_FILE")" 2>/dev/null
+mkdir -p "$SAMPLE_DIR" 2>/dev/null
+mkdir -p "$MEMORY_DUMP_DIR" 2>/dev/null
+mkdir -p "$YARA_RULES_DIR" 2>/dev/null
+
+# Rotate log if it exceeds max size
+rotate_log() {
+    if [ -f "$LOG_FILE" ] && [ $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt $LOG_MAX_SIZE ]; then
+        local timestamp=$(date +%Y%m%d%H%M%S)
+        mv "$LOG_FILE" "$LOG_FILE.$timestamp" 2>/dev/null
+        gzip -f "$LOG_FILE.$timestamp" 2>/dev/null
+    fi
+}
+
+log_message() {
+    # Only log critical events
+    if [ "$2" = "CRITICAL" ]; then
+        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] $1" >> "$LOG_FILE"
+        rotate_log
+    fi
+}
+
+# Create basic YARA rules if they don't exist
+create_default_yara_rules() {
+    if [ ! -f "$YARA_RULES_DIR/hidden_binaries.yar" ]; then
+        cat > "$YARA_RULES_DIR/hidden_binaries.yar" << 'EOF'
+rule Potential_Shellcode {
+    strings:
+        $shellcode_patterns1 = { 31 c0 50 68 2f 2f 73 68 68 2f 62 69 6e 89 e3 50 }  // /bin/sh shellcode
+        $shellcode_patterns2 = { fc e8 82 00 00 00 60 89 e5 31 c0 64 8b }           // Metasploit pattern
+        $shellcode_patterns3 = { 90 90 90 90 90 90 }                                // NOP sled
+    condition:
+        any of them
+}
+
+rule Potential_ELF_Injection {
+    strings:
+        $elf_magic = { 7F 45 4C 46 }  // ELF header
+    condition:
+        $elf_magic and not filepath contains ".so"
+}
+
+rule Potential_Backdoor_Strings {
+    strings:
+        $str1 = "connect back" nocase
+        $str2 = "reverse shell" nocase
+        $str3 = "bind shell" nocase
+        $str4 = "backdoor" nocase
+        $str5 = "rootkit" nocase
+        $str6 = "setuid" nocase
+        $str7 = "setgid" nocase
+    condition:
+        any of them
+}
+EOF
+    fi
+}
+
+# Advanced data structures for process tracking
+declare -A exempt_processes       # Exempt processes
+declare -A checked_processes      # Processes we've already checked
+declare -A detected_processes     # Processes already detected as hidden
+declare -A process_cmd_cache      # Cache for process commands
+declare -A process_user_cache     # Cache for process users
+declare -A process_start_time     # Track when we started monitoring a process
+
+# Load cache if it exists
+load_cache() {
+    if [ -f "$CACHE_FILE" ]; then
+        while IFS=: read -r type data; do
+            if [ "$type" = "EXEMPT" ]; then
+                exempt_processes["$data"]=1
+            elif [ "$type" = "CHECKED" ]; then
+                IFS='|' read -r pid result <<< "$data"
+                checked_processes["$pid"]="$result"
+            elif [ "$type" = "DETECTED" ]; then
+                detected_processes["$data"]=1
+            fi
+        done < "$CACHE_FILE"
+    fi
+}
+
+# Save cache periodically
+save_cache() {
+    # Create temp file first to avoid race conditions
+    local tmp_file=$(mktemp)
+    
+    # Save exempt processes
+    for pid in "${!exempt_processes[@]}"; do
+        echo "EXEMPT:$pid" >> "$tmp_file"
+    done
+    
+    # Save checked processes (limit to 1000 entries)
+    local count=0
+    for pid in "${!checked_processes[@]}"; do
+        if [ $count -lt 1000 ]; then
+            echo "CHECKED:$pid|${checked_processes[$pid]}" >> "$tmp_file"
+            count=$((count + 1))
+        fi
+    done
+    
+    # Save detected processes
+    for pid in "${!detected_processes[@]}"; do
+        echo "DETECTED:$pid" >> "$tmp_file"
+    done
+    
+    # Atomic update
+    mv "$tmp_file" "$CACHE_FILE" 2>/dev/null
+}
+
+# Update threat intelligence database
+update_threat_intel() {
+    local pid=$1
+    local cmd=$2
+    local user=$3
+    local exe_path=$4
+    local severity=$5
+    local details=$6
+    local timestamp=$(date -Iseconds)
+    
+    # Create temp file for atomic write
+    local tmp_file=$(mktemp)
+    
+    # Use jq if available for proper JSON handling
+    if command -v jq >/dev/null 2>&1; then
+        if [ -f "$INTEL_DB" ]; then
+            jq --arg pid "$pid" \
+               --arg cmd "$cmd" \
+               --arg user "$user" \
+               --arg exe "$exe_path" \
+               --arg severity "$severity" \
+               --arg details "$details" \
+               --arg time "$timestamp" \
+            '.threats[$pid] = {
+                "command": $cmd,
+                "user": $user,
+                "executable": $exe,
+                "severity": ($severity|tonumber),
+                "details": $details,
+                "timestamp": $time
+             } | .metadata.last_update = $time' \
+            "$INTEL_DB" > "$tmp_file" 2>/dev/null
+        else
+            echo "{\"threats\":{\"$pid\":{\"command\":\"$cmd\",\"user\":\"$user\",\"executable\":\"$exe\",\"severity\":$severity,\"details\":\"$details\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+        fi
+    else
+        # Simple fallback if jq not available
+        echo "{\"threats\":{\"$pid\":{\"command\":\"$cmd\",\"user\":\"$user\",\"executable\":\"$exe\",\"severity\":$severity,\"details\":\"$details\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+    fi
+    
+    # Atomic update
+    if [ -s "$tmp_file" ]; then
+        mv "$tmp_file" "$INTEL_DB"
+    else
+        rm -f "$tmp_file"
+    fi
+}
+
+# Get command line for a process
+get_process_cmd() {
+    local pid=$1
+    
+    # Check cache first
+    if [ -n "${process_cmd_cache[$pid]}" ]; then
+        echo "${process_cmd_cache[$pid]}"
+        return
+    fi
+    
+    # Get command and cache it
+    local cmd=$(ps -o comm= -p "$pid" 2>/dev/null)
+    if [ -n "$cmd" ]; then
+        process_cmd_cache["$pid"]="$cmd"
+        echo "$cmd"
+    fi
+}
+
+# Get user for a process
+get_process_user() {
+    local pid=$1
+    
+    # Check cache first
+    if [ -n "${process_user_cache[$pid]}" ]; then
+        echo "${process_user_cache[$pid]}"
+        return
+    fi
+    
+    # Get user and cache it
+    local user=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$user" ]; then
+        process_user_cache["$pid"]="$user"
+        echo "$user"
+    fi
+}
+
+# Check if a process is running a hidden binary
+is_hidden_binary() {
+    local pid=$1
+    
+    # Skip if process no longer exists
+    if [ ! -e "/proc/$pid" ]; then
+        return 1
+    fi
+    
+    # Check if we've already verified this process
+    if [ -n "${checked_processes[$pid]}" ]; then
+        if [ "${checked_processes[$pid]}" = "1" ]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+    
+    # Skip if already detected
+    if [ -n "${detected_processes[$pid]}" ]; then
+        return 0
+    fi
+    
+    # Check if exe link exists and points to a deleted file
+    if [ -L "/proc/$pid/exe" ]; then
+        local exe_path=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+        
+        if [[ "$exe_path" == *"(deleted)"* ]]; then
+            # Calculate threat score
+            local threat_score=50  # Base score for deleted binary
+            local threat_details="Executable deleted while running; "
+            
+            # Additional checks to determine severity
+            
+            # Check process uptime
+            local uptime=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+            if [ -n "$uptime" ] && [ "$uptime" -gt 86400 ]; then
+                # Process running for more than a day
+                threat_score=$((threat_score + 20))
+                threat_details="${threat_details}Long-running (${uptime}s); "
+            fi
+            
+            # Check for network connections
+            if command -v lsof >/dev/null 2>&1; then
+                if lsof -p "$pid" -i 2>/dev/null | grep -q "ESTABLISHED"; then
+                    threat_score=$((threat_score + 15))
+                    threat_details="${threat_details}Active network connections; "
+                fi
+            fi
+            
+            # Check for suspicious memory maps
+            if grep -q "rwxp" "/proc/$pid/maps" 2>/dev/null; then
+                threat_score=$((threat_score + 15))
+                threat_details="${threat_details}Executable memory regions; "
+            fi
+            
+            # Check parent process
+            local ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+            if [ -n "$ppid" ] && [ "$ppid" -ne 1 ]; then
+                local parent_cmd=$(ps -o comm= -p "$ppid" 2>/dev/null)
+                
+                # Check for suspicious parent processes
+                local suspicious_parents=("apache2" "httpd" "nginx" "php-fpm" "sshd")
+                for sp in "${suspicious_parents[@]}"; do
+                    if [ "$parent_cmd" = "$sp" ]; then
+                        threat_score=$((threat_score + 20))
+                        threat_details="${threat_details}Suspicious parent ($parent_cmd); "
+                        break
+                    fi
+                done
+            fi
+            
+            # Check for hidden process name (process name doesn't match executable)
+            local comm=$(cat "/proc/$pid/comm" 2>/dev/null)
+            local exe_name=$(basename "$exe_path" | sed 's/ (deleted)//')
+            if [ -n "$comm" ] && [ -n "$exe_name" ] && [ "$comm" != "$exe_name" ]; then
+                threat_score=$((threat_score + 15))
+                threat_details="${threat_details}Process name ($comm) doesn't match executable ($exe_name); "
+            fi
+            
+            # Store result in cache
+            checked_processes["$pid"]="1"
+            
+            # Update threat intelligence if score is high enough
+            if [ $threat_score -ge $SEVERITY_THRESHOLD ]; then
+                local cmd=$(get_process_cmd "$pid")
+                local user=$(get_process_user "$pid")
+                update_threat_intel "$pid" "$cmd" "$user" "$exe_path" "$threat_score" "$threat_details"
+            fi
+            
+            return 0
+        fi
+    fi
+    
+    # Not a hidden binary
+    checked_processes["$pid"]="0"
+    return 1
+}
+
+# Check if a process should be exempt from detection
+is_exempt_process() {
+    local pid=$1
+    local cmd=$(get_process_cmd "$pid")
+    local user=$(get_process_user "$pid")
+    
+    # Check if already marked as exempt
+    if [ -n "${exempt_processes[$pid]}" ]; then
+        return 0
+    fi
+    
+    # System processes are exempt
+    if [ "$pid" -le 2 ] || [ "$user" = "root" ] && [ "$pid" -le 1000 ]; then
+        exempt_processes["$pid"]=1
+        return 0
+    fi
+    
+    # Common exempt processes that might have deleted binaries legitimately
+    local exempt_patterns=(
+        "systemd" "init" "upstart" "kthreadd" "kworker" "ksoftirqd"
+        "python" "perl" "ruby" "node" "java" "php"
+        "dpkg" "apt" "yum" "dnf" "pacman" "rpm"
+        "bash" "sh" "zsh" "fish" "dash"
+        "docker" "containerd" "podman"
+    )
+    
+    for pattern in "${exempt_patterns[@]}"; do
+        if [[ "$cmd" == "$pattern"* ]]; then
+            exempt_processes["$pid"]=1
+            return 0
+        fi
+    done
+    
+    # Check for package management operations
+    local cmdline=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ')
+    if [[ "$cmdline" == *"uninstall"* ]] || [[ "$cmdline" == *"remove"* ]] || 
+       [[ "$cmdline" == *"purge"* ]] || [[ "$cmdline" == *"upgrade"* ]]; then
+        exempt_processes["$pid"]=1
+        return 0
+    fi
+    
+    # Check for short-lived processes
+    local uptime=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$uptime" ] && [ "$uptime" -lt 5 ]; then
+        # Very new processes get a grace period
+        return 0
+    fi
+    
+    return 1
+}
+
+# Create memory dump of suspicious process
+create_memory_dump() {
+    local pid=$1
+    local timestamp=$(date +%Y%m%d%H%M%S)
+    local dump_dir="$MEMORY_DUMP_DIR/pid_${pid}_${timestamp}"
+    
+    mkdir -p "$dump_dir" 2>/dev/null
+    
+    log_message "Creating memory dump for PID $pid in $dump_dir" "CRITICAL"
+    
+    # Save process information
+    ps -p "$pid" -F > "$dump_dir/process_info.txt" 2>/dev/null
+    
+    # Save memory maps
+    cat "/proc/$pid/maps" > "$dump_dir/memory_maps.txt" 2>/dev/null
+    
+    # Save command line and environment
+    cat "/proc/$pid/cmdline" | tr '\0' ' ' > "$dump_dir/cmdline.txt" 2>/dev/null
+    cat "/proc/$pid/environ" | tr '\0' '\n' > "$dump_dir/environ.txt" 2>/dev/null
+    
+    # Save open files
+    ls -la "/proc/$pid/fd/" > "$dump_dir/open_files.txt" 2>/dev/null
+    
+    # Dump memory regions (executable and suspicious regions only to save space)
+    if [ -f "/proc/$pid/maps" ]; then
+        # Extract executable regions
+        grep -E 'r-xp|rwxp' "/proc/$pid/maps" 2>/dev/null | head -10 | while read -r region; do
+            if [[ "$region" =~ ^([0-9a-f]+)-([0-9a-f]+) ]]; then
+                local start="0x${BASH_REMATCH[1]}"
+                local end="0x${BASH_REMATCH[2]}"
+                local size=$((end - start))
+                local addr="${BASH_REMATCH[1]}"
+                
+                # Only dump reasonable sized regions
+                if [ "$size" -lt 1048576 ]; then  # Max 1MB
+                    dd if="/proc/$pid/mem" bs=4096 skip=$((start / 4096)) count=$((size / 4096)) of="$dump_dir/mem_${addr}.dump" 2>/dev/null
+                fi
+            fi
+        done
+    fi
+    
+    # Run YARA scan if available
+    if command -v yara >/dev/null 2>&1 && [ -d "$YARA_RULES_DIR" ]; then
+        for rule_file in "$YARA_RULES_DIR"/*.yar; do
+            if [ -f "$rule_file" ]; then
+                yara -s "$rule_file" "$dump_dir"/*.dump > "$dump_dir/yara_results.txt" 2>/dev/null
+            fi
+        done
+    fi
+    
+    log_message "Memory dump completed for PID $pid" "CRITICAL"
+}
+
+# Create forensic capture of suspicious process
+create_forensic_capture() {
+    local pid=$1
+    local exe_path=$2
+    local threat_score=$3
+    local threat_details=$4
+    
+    local timestamp=$(date +%Y%m%d%H%M%S)
+    local forensic_dir="$FORENSIC_DIR/pid_${pid}_${timestamp}"
+    mkdir -p "$forensic_dir" 2>/dev/null
+    
+    log_message "Creating forensic capture for hidden binary: PID=$pid in $forensic_dir" "CRITICAL"
+    
+    # Save basic process information
+    ps -p "$pid" -F > "$forensic_dir/process_info.txt" 2>/dev/null
+    
+    # Save process tree
+    pstree -p "$pid" > "$forensic_dir/process_tree.txt" 2>/dev/null
+    
+    # Save parent process info
+    local ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$ppid" ]; then
+        ps -p "$ppid" -F > "$forensic_dir/parent_info.txt" 2>/dev/null
+    fi
+    
+    # Save open files and connections
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -p "$pid" > "$forensic_dir/open_files.txt" 2>/dev/null
+    fi
+    
+    # Save network connections
+    if command -v ss >/dev/null 2>&1; then
+        ss -p | grep "$pid" > "$forensic_dir/network_connections.txt" 2>/dev/null
+    fi
+    
+    # Save threat details
+    {
+        echo "Timestamp: $(date)"
+        echo "PID: $pid"
+        echo "Executable: $exe_path"
+        echo "Command: $(ps -o cmd= -p "$pid" 2>/dev/null)"
+        echo "User: $(ps -o user= -p "$pid" 2>/dev/null)"
+        echo "Threat Score: $threat_score"
+        echo "Threat Details: $threat_details"
+        echo "Process Start Time: $(ps -o lstart= -p "$pid" 2>/dev/null)"
+    } > "$forensic_dir/threat_details.txt"
+    
+    log_message "Forensic capture completed for PID $pid" "CRITICAL"
+}
+
+# Enhanced hidden binary handling with multiple response options
+handle_hidden_binary() {
+    local pid=$1
+    local cmd=$(get_process_cmd "$pid")
+    local user=$(get_process_user "$pid")
+    local exe_path=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+    
+    # Skip if already detected
+    if [ -n "${detected_processes[$pid]}" ]; then
+        return
+    fi
+    
+    # Mark as detected
+    detected_processes["$pid"]=1
+    
+    # Get threat score and details from checked_processes
+    local threat_score=0
+    local threat_details=""
+    
+    # Calculate threat score if not already done
+    if [ -n "${checked_processes[$pid]}" ] && [ "${checked_processes[$pid]}" = "1" ]; then
+        # Re-evaluate threat score for detected process
+        
+        # Base score for deleted binary
+        threat_score=50
+        threat_details="Executable deleted while running; "
+        
+        # Check process uptime
+        local uptime=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+        if [ -n "$uptime" ] && [ "$uptime" -gt 86400 ]; then
+            # Process running for more than a day
+            threat_score=$((threat_score + 20))
+            threat_details="${threat_details}Long-running (${uptime}s); "
+        fi
+        
+        # Check for network connections
+        if command -v lsof >/dev/null 2>&1; then
+            if lsof -p "$pid" -i 2>/dev/null | grep -q "ESTABLISHED"; then
+                threat_score=$((threat_score + 15))
+                threat_details="${threat_details}Active network connections; "
+            fi
+        fi
+        
+        # Check for suspicious memory maps
+        if grep -q "rwxp" "/proc/$pid/maps" 2>/dev/null; then
+            threat_score=$((threat_score + 15))
+            threat_details="${threat_details}Executable memory regions; "
+        fi
+    fi
+    
+    # Log the detection with detailed information
+    log_message "Hidden binary detected: PID=$pid, User=$user, Command=$cmd, Path=$exe_path" "CRITICAL"
+    
+    # Create forensic capture for analysis
+    create_forensic_capture "$pid" "$exe_path" "$threat_score" "$threat_details"
+    
+    # For high severity threats, create memory dump
+    if [ $threat_score -ge $SEVERITY_THRESHOLD ]; then
+        create_memory_dump "$pid"
+    fi
+    
+    # Update threat intelligence
+    update_threat_intel "$pid" "$cmd" "$user" "$exe_path" "$threat_score" "$threat_details"
+    
+    # Take action based on severity and user
+    if [ $threat_score -ge 80 ]; then
+        # For critical threats, terminate the process and its children
+        log_message "Terminating process tree for critical hidden binary: PID=$pid" "CRITICAL"
+        pkill -9 -P "$pid" 2>/dev/null  # Kill children first
+        kill -9 "$pid" 2>/dev/null      # Then kill the parent
+    elif [ $threat_score -ge $SEVERITY_THRESHOLD ]; then
+        # For high severity threats, kill non-root processes
+        if [ "$user" != "root" ]; then
+            log_message "Terminating high severity hidden binary process: PID=$pid" "CRITICAL"
+            kill -9 "$pid" 2>/dev/null
+        else
+            log_message "WARNING: Not terminating root-owned hidden binary process: PID=$pid" "CRITICAL"
+        fi
+    else
+        # For lower severity, just monitor
+        log_message "Monitoring low severity hidden binary process: PID=$pid" "CRITICAL"
+    fi
+}
+
+# Generate threat intelligence report
+generate_threat_report() {
+    if [ -f "$INTEL_DB" ] && command -v jq >/dev/null 2>&1; then
+        local threat_count=$(jq '.threats | length' "$INTEL_DB" 2>/dev/null)
+        local high_threats=$(jq '.threats | to_entries[] | select(.value.severity >= 70) | .key' "$INTEL_DB" 2>/dev/null | wc -l)
+        
+        log_message "Hidden Binary Threat Report: Total threats=$threat_count, High severity threats=$high_threats" "CRITICAL"
+        
+        # List top threats
+        local top_threats=$(jq -r '.threats | to_entries | sort_by(.value.severity) | reverse | .[0:5] | .[] | "\(.key):\(.value.command):\(.value.user):\(.value.severity)"' "$INTEL_DB" 2>/dev/null)
+        if [ -n "$top_threats" ]; then
+            log_message "Top hidden binary threats:" "CRITICAL"
+            while IFS=: read -r pid cmd user severity; do
+                log_message "  PID=$pid, Command=$cmd, User=$user, Severity=$severity" "CRITICAL"
+            done <<< "$top_threats"
+        fi
+    fi
+}
+
+# Clean up stale process tracking data
+cleanup_process_data() {
+    # Remove data for non-existent processes
+    local stale_pids=()
+    
+    # Check each tracked process
+    for pid in "${!checked_processes[@]}"; do
+        if [ ! -e "/proc/$pid" ]; then
+            stale_pids+=("$pid")
+        fi
+    done
+    
+    # Remove stale entries
+    for pid in "${stale_pids[@]}"; do
+        unset checked_processes["$pid"]
+        unset detected_processes["$pid"]
+        unset process_cmd_cache["$pid"]
+        unset process_user_cache["$pid"]
+    done
+    
+    # Reset exempt processes periodically to avoid stale data
+    if [ ${#exempt_processes[@]} -gt 1000 ]; then
+        declare -A exempt_processes
+    fi
+}
+
+# Main function - enhanced with advanced detection
+main() {
+    log_message "Hidden Binary Execution Catcher Professional started" "CRITICAL"
+    
+    # Use lower CPU priority
+    renice 10 $$ > /dev/null 2>&1
+    ionice -c3 -p $$ > /dev/null 2>&1
+    
+    # Create default YARA rules
+    create_default_yara_rules
+    
+    # Load cache
+    load_cache
+    
+    # Counter for maintenance operations
+    local counter=0
+    local report_interval=24  # Generate report every 24 cycles
+    local cleanup_interval=5  # Clean caches every 5 cycles
+    
+    while true; do
+        # Get all running processes
+        local threat_count=0
+        
+        for pid in $(find /proc -maxdepth 1 -regex '/proc/[0-9]+' -printf "%f\n" 2>/dev/null); do
+            # Skip if not a valid PID
+            if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+                continue
+            fi
+            
+            # Skip kernel processes
+            if [ "$pid" -le 2 ]; then
+                continue
+            fi
+            
+            # Skip exempt processes
+            if is_exempt_process "$pid"; then
+                continue
+            fi
+            
+            # Check for hidden binary
+            if is_hidden_binary "$pid"; then
+                handle_hidden_binary "$pid"
+                threat_count=$((threat_count + 1))
+            fi
+        done
+        
+        # Log summary if threats found
+        if [ $threat_count -gt 0 ]; then
+            log_message "Scan complete: Detected $threat_count hidden binary executions" "CRITICAL"
+        fi
+        
+        # Increment counter and perform maintenance periodically
+        counter=$((counter + 1))
+        
+        # Clean process data periodically
+        if [ $((counter % cleanup_interval)) -eq 0 ]; then
+            cleanup_process_data
+        fi
+        
+        # Save cache periodically
+        if [ $((counter % 10)) -eq 0 ]; then
+            save_cache
+        fi
+        
+        # Generate threat report periodically
+        if [ $((counter % report_interval)) -eq 0 ]; then
+            generate_threat_report
+        fi
+        
+        # Use adaptive sleep to reduce system load
+        if [ $threat_count -gt 0 ]; then
+            # More frequent checks if threats detected
+            sleep 30
+        else
+            sleep $SCAN_INTERVAL
+        fi
+    done
+}
+
+# Trap signals for clean exit and reporting
+trap "save_cache; generate_threat_report; log_message 'Hidden Binary Execution Catcher Hardened Fangbull stopped' 'CRITICAL'; exit 0" SIGTERM SIGINT
+
+main 

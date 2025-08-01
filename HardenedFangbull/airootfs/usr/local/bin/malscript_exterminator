@@ -1,0 +1,708 @@
+#!/bin/bash
+
+# Malicious Script Exterminator - Hardened Fangbull (Optimized)
+# Advanced detection and elimination of malicious scripts
+# Performance optimized with efficient logging
+
+# Load optimized log manager
+source /usr/local/bin/fangbull-log-manager 2>/dev/null || {
+    echo "Error: fangbull-log-manager not found" >&2
+    exit 1
+}
+
+# Configuration
+LOG_FILE="/var/log/fangbull-ids/malscript.log"
+LOG_MAX_SIZE=5242880  # 5MB max log size
+CACHE_FILE="/var/log/fangbull-ids/malscript_cache.json"
+SAMPLE_DIR="/var/log/fangbull-ids/malicious_scripts"
+INTEL_DB="/var/log/fangbull-ids/malscript_intel.db"
+SCAN_INTERVAL=45      # Seconds between scans
+YARA_RULES_DIR="/var/log/fangbull-ids/malscript_rules"
+SEVERITY_THRESHOLD=70 # Severity score threshold for action
+MAX_FILE_SIZE=10485760 # 10MB max file size for scanning
+
+# Create required directories
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
+mkdir -p "$SAMPLE_DIR" 2>/dev/null
+mkdir -p "$YARA_RULES_DIR" 2>/dev/null
+
+# Rotate log if it exceeds max size
+rotate_log() {
+    if [ -f "$LOG_FILE" ] && [ $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt $LOG_MAX_SIZE ]; then
+        local timestamp=$(date +%Y%m%d%H%M%S)
+        mv "$LOG_FILE" "$LOG_FILE.$timestamp" 2>/dev/null
+        gzip -f "$LOG_FILE.$timestamp" 2>/dev/null
+    fi
+}
+
+log_message() {
+    # Only log critical events
+    if [ "$2" = "CRITICAL" ]; then
+        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$timestamp] $1" >> "$LOG_FILE"
+        rotate_log
+    fi
+}
+
+# Create basic YARA rules if they don't exist
+create_default_yara_rules() {
+    if [ ! -f "$YARA_RULES_DIR/malicious_scripts.yar" ]; then
+        cat > "$YARA_RULES_DIR/malicious_scripts.yar" << 'EOF'
+rule Base64_Encoded_Shell_Commands {
+    strings:
+        $base64_decode1 = "base64 -d" nocase
+        $base64_decode2 = "base64 --decode" nocase
+        $base64_decode3 = "base64.decode" nocase
+        $base64_decode4 = "decode_base64" nocase
+        $base64_decode5 = "openssl base64 -d" nocase
+        $base64_pattern = /[A-Za-z0-9+\/]{30,}={0,2}/
+    condition:
+        any of ($base64_decode*) and $base64_pattern
+}
+
+rule Suspicious_Eval_Usage {
+    strings:
+        $eval1 = "eval(" nocase
+        $eval2 = "eval `" nocase
+        $eval3 = "eval $(" nocase
+        $eval4 = "`eval " nocase
+        $eval5 = "$(eval " nocase
+    condition:
+        any of them
+}
+
+rule Reverse_Shell_Patterns {
+    strings:
+        $rev1 = "/dev/tcp/" nocase
+        $rev2 = "netcat -e" nocase
+        $rev3 = "nc -e" nocase
+        $rev4 = "socat" nocase
+        $rev5 = "bash -i" nocase
+        $rev6 = "sh -i" nocase
+        $rev7 = "python -c" nocase
+        $rev8 = "perl -e" nocase
+        $rev9 = "ruby -e" nocase
+        $rev10 = "php -r" nocase
+        $port_pattern = /:[0-9]{1,5}/
+    condition:
+        any of ($rev*) and $port_pattern
+}
+
+rule Crypto_Miner_Indicators {
+    strings:
+        $miner1 = "xmrig" nocase
+        $miner2 = "minerd" nocase
+        $miner3 = "cpuminer" nocase
+        $miner4 = "ethminer" nocase
+        $miner5 = "cgminer" nocase
+        $miner6 = "bfgminer" nocase
+        $pool1 = "stratum+tcp://" nocase
+        $pool2 = "stratum+udp://" nocase
+        $pool3 = "pool.minexmr.com" nocase
+        $pool4 = "xmrpool" nocase
+        $pool5 = "nanopool" nocase
+        $pool6 = "nicehash" nocase
+    condition:
+        any of ($miner*) or any of ($pool*)
+}
+
+rule Suspicious_Curl_Wget_Usage {
+    strings:
+        $curl1 = "curl -s" nocase
+        $curl2 = "curl --silent" nocase
+        $wget1 = "wget -q" nocase
+        $wget2 = "wget --quiet" nocase
+        $pipe_sh1 = "| sh" nocase
+        $pipe_sh2 = "| bash" nocase
+        $pipe_sh3 = "> /tmp/" nocase
+        $pipe_sh4 = "> /dev/shm/" nocase
+    condition:
+        (any of ($curl*) or any of ($wget*)) and any of ($pipe_sh*)
+}
+
+rule Suspicious_Privilege_Escalation {
+    strings:
+        $sudo1 = "sudo -s" nocase
+        $sudo2 = "sudo su" nocase
+        $sudo3 = "sudo -i" nocase
+        $sudo4 = "sudo bash" nocase
+        $suid1 = "chmod +s" nocase
+        $suid2 = "chmod u+s" nocase
+        $suid3 = "chmod 4755" nocase
+        $passwd1 = "/etc/passwd" nocase
+        $passwd2 = "/etc/shadow" nocase
+        $passwd3 = "/etc/sudoers" nocase
+    condition:
+        any of ($sudo*) or any of ($suid*) or any of ($passwd*)
+}
+EOF
+    fi
+}
+
+# Suspicious locations to monitor - comprehensive list
+SUSPICIOUS_DIRS=(
+    "/tmp"
+    "/var/tmp"
+    "/dev/shm"
+    "/run/shm"
+    "/run/user"
+    "/proc/self/cwd"
+)
+
+# Home directories will be handled separately
+HOME_DIRS=$(find /home -maxdepth 1 -type d 2>/dev/null)
+
+# Suspicious file extensions to monitor
+SUSPICIOUS_EXTENSIONS=(
+    "sh"
+    "py"
+    "pl"
+    "rb"
+    "php"
+    "js"
+    "out"
+    "bin"
+    "elf"
+    "run"
+    "x86"
+    "x64"
+)
+
+# Malicious patterns to detect - comprehensive list
+MALICIOUS_PATTERNS=(
+    "base64.*decode"
+    "eval[ (]"
+    "exec[ (]"
+    "fork[ (]"
+    "socket[ (]"
+    "curl.*\|[ ]*sh"
+    "wget.*\|[ ]*sh"
+    "nc -e"
+    "netcat -e"
+    "/dev/tcp/"
+    "bash -i"
+    "sh -i"
+    "python -c.*socket"
+    "perl -e.*socket"
+    "ruby -e.*TCPSocket"
+    "php -r.*fsockopen"
+    "xmrig"
+    "minerd"
+    "stratum+tcp"
+    "chmod \+s"
+    "chmod 4"
+    "chmod u\+s"
+)
+
+# Cache of known clean and malicious files
+declare -A CLEAN_CACHE
+declare -A MALICIOUS_CACHE
+
+# Load cache if it exists
+load_cache() {
+    if [ -f "$CACHE_FILE" ] && command -v jq >/dev/null 2>&1; then
+        # Load clean files
+        local clean_files=$(jq -r '.clean_files | to_entries[] | "\(.key):\(.value)"' "$CACHE_FILE" 2>/dev/null)
+        if [ -n "$clean_files" ]; then
+            while IFS=: read -r path hash; do
+                CLEAN_CACHE["$path"]="$hash"
+            done <<< "$clean_files"
+        fi
+        
+        # Load malicious files
+        local malicious_files=$(jq -r '.malicious_files | to_entries[] | "\(.key):\(.value)"' "$CACHE_FILE" 2>/dev/null)
+        if [ -n "$malicious_files" ]; then
+            while IFS=: read -r path hash; do
+                MALICIOUS_CACHE["$path"]="$hash"
+            done <<< "$malicious_files"
+        fi
+    fi
+}
+
+# Save cache periodically
+save_cache() {
+    # Create temp file for atomic write
+    local tmp_file=$(mktemp)
+    
+    # Use jq if available for proper JSON handling
+    if command -v jq >/dev/null 2>&1; then
+        # Create an empty JSON structure
+        echo '{"clean_files":{},"malicious_files":{}}' > "$tmp_file"
+        
+        # Add clean files (limit to 1000 entries)
+        local count=0
+        for path in "${!CLEAN_CACHE[@]}"; do
+            if [ $count -lt 1000 ]; then
+                jq --arg path "$path" --arg hash "${CLEAN_CACHE[$path]}" \
+                '.clean_files[$path] = $hash' "$tmp_file" > "${tmp_file}.new"
+                if [ -s "${tmp_file}.new" ]; then
+                    mv "${tmp_file}.new" "$tmp_file"
+                    count=$((count + 1))
+                fi
+            fi
+        done
+        
+        # Add malicious files (keep all entries)
+        for path in "${!MALICIOUS_CACHE[@]}"; do
+            jq --arg path "$path" --arg hash "${MALICIOUS_CACHE[$path]}" \
+            '.malicious_files[$path] = $hash' "$tmp_file" > "${tmp_file}.new"
+            if [ -s "${tmp_file}.new" ]; then
+                mv "${tmp_file}.new" "$tmp_file"
+            fi
+        done
+    else
+        # Simple fallback if jq not available
+        echo "{\"timestamp\":\"$(date -Iseconds)\"}" > "$tmp_file"
+    fi
+    
+    # Atomic update
+    if [ -s "$tmp_file" ]; then
+        mv "$tmp_file" "$CACHE_FILE"
+    else
+        rm -f "$tmp_file"
+    fi
+}
+
+# Update threat intelligence database
+update_threat_intel() {
+    local file=$1
+    local hash=$2
+    local score=$3
+    local reason=$4
+    local timestamp=$(date -Iseconds)
+    
+    # Create temp file for atomic write
+    local tmp_file=$(mktemp)
+    
+    # Use jq if available for proper JSON handling
+    if command -v jq >/dev/null 2>&1; then
+        if [ -f "$INTEL_DB" ]; then
+            jq --arg hash "$hash" \
+               --arg file "$file" \
+               --arg score "$score" \
+               --arg reason "$reason" \
+               --arg time "$timestamp" \
+            '.threats[$hash] = {
+                "file": $file,
+                "score": ($score|tonumber),
+                "reason": $reason,
+                "timestamp": $time
+             } | .metadata.last_update = $time' \
+            "$INTEL_DB" > "$tmp_file" 2>/dev/null
+        else
+            echo "{\"threats\":{\"$hash\":{\"file\":\"$file\",\"score\":$score,\"reason\":\"$reason\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+        fi
+    else
+        # Simple fallback if jq not available
+        echo "{\"threats\":{\"$hash\":{\"file\":\"$file\",\"score\":$score,\"reason\":\"$reason\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+    fi
+    
+    # Atomic update
+    if [ -s "$tmp_file" ]; then
+        mv "$tmp_file" "$INTEL_DB"
+    else
+        rm -f "$tmp_file"
+    fi
+}
+
+# Advanced malicious script detection with multiple analysis methods
+is_malicious() {
+    local file=$1
+    
+    # Skip if file no longer exists
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+    
+    # Skip large files
+    local file_size=$(stat -c%s "$file" 2>/dev/null)
+    if [ -z "$file_size" ] || [ "$file_size" -gt "$MAX_FILE_SIZE" ]; then
+        return 1
+    fi
+    
+    # Get file hash for cache lookup
+    local hash=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)
+    if [ -z "$hash" ]; then
+        return 1
+    fi
+    
+    # Check cache first
+    if [ "${CLEAN_CACHE["$file"]}" = "$hash" ]; then
+        return 1
+    fi
+    
+    if [ -n "${MALICIOUS_CACHE["$file"]}" ]; then
+        return 0
+    fi
+    
+    # Calculate threat score
+    local threat_score=0
+    local threat_reason=""
+    
+    # Check file type
+    local file_type=$(file -b "$file" 2>/dev/null)
+    
+    # Skip binary files unless they have suspicious extensions
+    if [[ "$file_type" == *"ELF"* ]] || [[ "$file_type" == *"executable"* ]]; then
+        local ext="${file##*.}"
+        local is_suspicious=0
+        
+        for suspicious_ext in "${SUSPICIOUS_EXTENSIONS[@]}"; do
+            if [ "$ext" = "$suspicious_ext" ]; then
+                is_suspicious=1
+                break
+            fi
+        done
+        
+        if [ $is_suspicious -eq 0 ]; then
+            CLEAN_CACHE["$file"]="$hash"
+            return 1
+        else
+            threat_score=$((threat_score + 30))
+            threat_reason="${threat_reason}Suspicious binary extension; "
+        fi
+    fi
+    
+    # Check if it's a script file
+    local is_script=0
+    if [[ "$file_type" == *"script"* ]] || [[ "$file_type" == *"shell"* ]] || 
+       [[ "$file_type" == *"Python"* ]] || [[ "$file_type" == *"Perl"* ]] || 
+       [[ "$file_type" == *"PHP"* ]] || [[ "$file_type" == *"Ruby"* ]] || 
+       [[ "$file_type" == *"JavaScript"* ]]; then
+        is_script=1
+        threat_score=$((threat_score + 10))
+    fi
+    
+    # Check file permissions
+    local perms=$(stat -c %a "$file" 2>/dev/null)
+    if [ "$perms" = "777" ] || [ "$perms" = "755" ] || [ "$perms" = "4755" ]; then
+        threat_score=$((threat_score + 15))
+        threat_reason="${threat_reason}Suspicious permissions; "
+    fi
+    
+    # Check shebang line
+    local shebang=$(head -n 1 "$file" 2>/dev/null)
+    if [[ "$shebang" == "#!/bin/sh"* ]] || [[ "$shebang" == "#!/bin/bash"* ]] || 
+       [[ "$shebang" == "#!/usr/bin/env bash"* ]] || [[ "$shebang" == "#!/usr/bin/env sh"* ]]; then
+        is_script=1
+        threat_score=$((threat_score + 10))
+    elif [[ "$shebang" == "#!/usr/bin/env python"* ]] || [[ "$shebang" == "#!/usr/bin/python"* ]]; then
+        is_script=1
+        threat_score=$((threat_score + 10))
+    elif [[ "$shebang" == "#!/usr/bin/perl"* ]] || [[ "$shebang" == "#!/usr/bin/env perl"* ]]; then
+        is_script=1
+        threat_score=$((threat_score + 10))
+    fi
+    
+    # If it's not a script, check if it's a hidden binary
+    if [ $is_script -eq 0 ] && [[ "$file_type" != *"text"* ]]; then
+        # Check if it's in a suspicious location
+        local is_in_suspicious_dir=0
+        for dir in "${SUSPICIOUS_DIRS[@]}"; do
+            if [[ "$file" == "$dir"/* ]]; then
+                is_in_suspicious_dir=1
+                break
+            fi
+        done
+        
+        if [ $is_in_suspicious_dir -eq 1 ]; then
+            threat_score=$((threat_score + 40))
+            threat_reason="${threat_reason}Binary in suspicious location; "
+        fi
+        
+        # Check if it's a hidden file
+        if [[ "$(basename "$file")" == "."* ]]; then
+            threat_score=$((threat_score + 20))
+            threat_reason="${threat_reason}Hidden binary; "
+        fi
+    fi
+    
+    # For script files, perform content analysis
+    if [ $is_script -eq 1 ]; then
+        # Check for malicious patterns using optimized grep
+        local grep_patterns=$(printf "|%s" "${MALICIOUS_PATTERNS[@]}")
+        grep_patterns=${grep_patterns:1}  # Remove leading |
+        
+        if grep -q -E "$grep_patterns" "$file" 2>/dev/null; then
+            # Find which patterns matched for better reporting
+            for pattern in "${MALICIOUS_PATTERNS[@]}"; do
+                if grep -q -E "$pattern" "$file" 2>/dev/null; then
+                    threat_score=$((threat_score + 20))
+                    threat_reason="${threat_reason}Malicious pattern: $pattern; "
+                fi
+            done
+        fi
+        
+        # Check for base64 encoded data
+        if grep -q -E "[A-Za-z0-9+/]{30,}={0,2}" "$file" 2>/dev/null; then
+            threat_score=$((threat_score + 25))
+            threat_reason="${threat_reason}Base64 encoded data; "
+        fi
+        
+        # Check for IP addresses and domain names
+        if grep -q -E "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" "$file" 2>/dev/null; then
+            threat_score=$((threat_score + 15))
+            threat_reason="${threat_reason}Contains IP addresses; "
+        fi
+        
+        # Check for common C2 domains
+        if grep -q -E "(\.onion|pastebin\.com|github\.io|raw\.githubusercontent)" "$file" 2>/dev/null; then
+            threat_score=$((threat_score + 20))
+            threat_reason="${threat_reason}Contains suspicious domains; "
+        fi
+        
+        # Check for common port numbers used in attacks
+        if grep -q -E ":(4444|8080|1080|31337|6666|6667|6668|6669)" "$file" 2>/dev/null; then
+            threat_score=$((threat_score + 20))
+            threat_reason="${threat_reason}Contains suspicious port numbers; "
+        fi
+        
+        # Check for obfuscation techniques
+        if grep -q -E "\\\\x[0-9a-fA-F]{2}" "$file" 2>/dev/null; then
+            threat_score=$((threat_score + 30))
+            threat_reason="${threat_reason}Contains hex-encoded strings; "
+        fi
+    fi
+    
+    # Run YARA scan if available
+    if command -v yara >/dev/null 2>&1 && [ -d "$YARA_RULES_DIR" ]; then
+        for rule_file in "$YARA_RULES_DIR"/*.yar; do
+            if [ -f "$rule_file" ]; then
+                local yara_result=$(yara -s "$rule_file" "$file" 2>/dev/null)
+                if [ -n "$yara_result" ]; then
+                    threat_score=$((threat_score + 40))
+                    threat_reason="${threat_reason}YARA match: $(echo "$yara_result" | head -1); "
+                fi
+            fi
+        done
+    fi
+    
+    # Make decision based on threat score
+    if [ $threat_score -ge $SEVERITY_THRESHOLD ]; then
+        MALICIOUS_CACHE["$file"]="$hash"
+        update_threat_intel "$file" "$hash" "$threat_score" "$threat_reason"
+        return 0
+    fi
+    
+    # If score is moderate, add to intel but don't take action
+    if [ $threat_score -ge 40 ]; then
+        update_threat_intel "$file" "$hash" "$threat_score" "$threat_reason"
+    else
+        CLEAN_CACHE["$file"]="$hash"
+    fi
+    
+    return 1
+}
+
+# Handle malicious file with advanced forensics
+handle_malicious_file() {
+    local file=$1
+    local hash=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1)
+    
+    # Log the detection
+    log_message "Malicious script detected: $file (Hash: $hash)" "CRITICAL"
+    
+    # Create a directory for this sample
+    local sample_dir="$SAMPLE_DIR/$hash"
+    mkdir -p "$sample_dir" 2>/dev/null
+    
+    # Save a copy of the file for analysis
+    if [ ! -f "$sample_dir/sample" ]; then
+        cp "$file" "$sample_dir/sample" 2>/dev/null
+        
+        # Save metadata
+        {
+            echo "Path: $file"
+            echo "Hash: $hash"
+            echo "Detection time: $(date -Iseconds)"
+            echo "File type: $(file -b "$file" 2>/dev/null)"
+            echo "Permissions: $(stat -c %a "$file" 2>/dev/null)"
+            echo "Owner: $(stat -c %U "$file" 2>/dev/null)"
+            echo "Size: $(stat -c %s "$file" 2>/dev/null) bytes"
+            echo "Shebang: $(head -n 1 "$file" 2>/dev/null)"
+        } > "$sample_dir/metadata.txt"
+        
+        # Extract suspicious patterns
+        grep -E "$(printf "|%s" "${MALICIOUS_PATTERNS[@]}")" "$file" > "$sample_dir/suspicious_patterns.txt" 2>/dev/null
+        
+        # Extract IP addresses and domains
+        grep -E "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b|[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+" "$file" > "$sample_dir/network_indicators.txt" 2>/dev/null
+        
+        # Extract base64 encoded data
+        grep -E "[A-Za-z0-9+/]{30,}={0,2}" "$file" > "$sample_dir/encoded_data.txt" 2>/dev/null
+        
+        # Try to decode base64 data
+        if [ -s "$sample_dir/encoded_data.txt" ]; then
+            while read -r line; do
+                echo "$line" | grep -Eo "[A-Za-z0-9+/]{30,}={0,2}" | base64 -d > "$sample_dir/decoded_data.bin" 2>/dev/null
+            done < "$sample_dir/encoded_data.txt"
+        fi
+    }
+    
+    # Check for cron references
+    for crontab in /etc/crontab /var/spool/cron/* /etc/cron.*/*; do
+        if [ -f "$crontab" ] && grep -q "$file" "$crontab" 2>/dev/null; then
+            log_message "Found cron reference to malicious file in $crontab" "CRITICAL"
+            
+            # Create a backup of the crontab
+            cp "$crontab" "$sample_dir/$(basename "$crontab").backup" 2>/dev/null
+            
+            # Remove the reference safely
+            local tmp_crontab=$(mktemp)
+            grep -v "$file" "$crontab" > "$tmp_crontab" 2>/dev/null
+            
+            # Verify the new crontab is valid and not empty
+            if [ -s "$tmp_crontab" ]; then
+                cat "$tmp_crontab" > "$crontab" 2>/dev/null
+                log_message "Removed cron reference to malicious file from $crontab" "CRITICAL"
+            else
+                log_message "Warning: Could not safely remove cron reference (would result in empty file)" "CRITICAL"
+            fi
+            
+            rm -f "$tmp_crontab"
+        fi
+    done
+    
+    # Kill any running processes using this file
+    if command -v fuser >/dev/null 2>&1; then
+        local pids=$(fuser "$file" 2>/dev/null | tr -d ' ')
+        if [ -n "$pids" ]; then
+            log_message "Killing processes using malicious file: $pids" "CRITICAL"
+            kill -9 $pids 2>/dev/null
+        fi
+    fi
+    
+    # Remove the file
+    if rm -f "$file" 2>/dev/null; then
+        log_message "Successfully removed malicious file: $file" "CRITICAL"
+    else
+        log_message "Failed to remove malicious file: $file" "CRITICAL"
+    fi
+}
+
+# Generate threat intelligence report
+generate_threat_report() {
+    if [ -f "$INTEL_DB" ] && command -v jq >/dev/null 2>&1; then
+        local threat_count=$(jq '.threats | length' "$INTEL_DB" 2>/dev/null)
+        local high_threats=$(jq '.threats | to_entries[] | select(.value.score >= 80) | .key' "$INTEL_DB" 2>/dev/null | wc -l)
+        
+        log_message "Malicious Script Threat Report: Total threats=$threat_count, High severity threats=$high_threats" "CRITICAL"
+        
+        # List top threats
+        local top_threats=$(jq -r '.threats | to_entries | sort_by(.value.score) | reverse | .[0:5] | .[] | "\(.key):\(.value.score):\(.value.reason)"' "$INTEL_DB" 2>/dev/null)
+        if [ -n "$top_threats" ]; then
+            log_message "Top malicious script threats:" "CRITICAL"
+            while IFS=: read -r hash score reason; do
+                log_message "  Hash=$hash, Score=$score, Reason=$reason" "CRITICAL"
+            done <<< "$top_threats"
+        fi
+    fi
+}
+
+# Scan directories for malicious scripts
+scan_directories() {
+    local dir=$1
+    local expanded_dir=${dir/\~/$HOME}
+    
+    # Skip if directory doesn't exist
+    if [ ! -d "$expanded_dir" ]; then
+        return
+    fi
+    
+    # Build extension pattern for find command
+    local ext_pattern=""
+    for ext in "${SUSPICIOUS_EXTENSIONS[@]}"; do
+        if [ -z "$ext_pattern" ]; then
+            ext_pattern="-name \"*.${ext}\""
+        else
+            ext_pattern="${ext_pattern} -o -name \"*.${ext}\""
+        fi
+    done
+    
+    # Find suspicious files - optimized to use a single find command
+    local files=$(eval "find \"$expanded_dir\" -type f \\( $ext_pattern -o -executable \\) -size -10M 2>/dev/null")
+    
+    # Process each file
+    local count=0
+    while read -r file; do
+        if [ -n "$file" ] && [ -f "$file" ]; then
+            if is_malicious "$file"; then
+                handle_malicious_file "$file"
+                count=$((count + 1))
+            fi
+        fi
+    done <<< "$files"
+    
+    # Return the count of malicious files found
+    echo $count
+}
+
+# Main function - enhanced with advanced detection
+main() {
+    log_message "MalScript Exterminator Professional started" "CRITICAL"
+    
+    # Use lower CPU priority
+    renice 10 $$ > /dev/null 2>&1
+    ionice -c3 -p $$ > /dev/null 2>&1
+    
+    # Create default YARA rules
+    create_default_yara_rules
+    
+    # Load cache
+    load_cache
+    
+    # Counter for maintenance operations
+    local counter=0
+    local report_interval=24  # Generate report every 24 cycles
+    
+    while true; do
+        # Scan suspicious directories
+        local total_malicious=0
+        
+        # Scan each suspicious directory
+        for dir in "${SUSPICIOUS_DIRS[@]}"; do
+            local count=$(scan_directories "$dir")
+            total_malicious=$((total_malicious + count))
+        done
+        
+        # Scan home directories
+        for dir in $HOME_DIRS; do
+            # Only scan specific subdirectories in home to avoid excessive scanning
+            for subdir in ".cache" "Downloads" "tmp" ".local/share" ".config"; do
+                local count=$(scan_directories "$dir/$subdir")
+                total_malicious=$((total_malicious + count))
+            done
+        done
+        
+        # Log summary if threats found
+        if [ $total_malicious -gt 0 ]; then
+            log_message "Scan complete: Found and eliminated $total_malicious malicious scripts" "CRITICAL"
+        fi
+        
+        # Increment counter and perform maintenance periodically
+        counter=$((counter + 1))
+        
+        # Save cache periodically
+        if [ $((counter % 10)) -eq 0 ]; then
+            save_cache
+        fi
+        
+        # Generate threat report periodically
+        if [ $((counter % report_interval)) -eq 0 ]; then
+            generate_threat_report
+        fi
+        
+        # Use adaptive sleep to reduce system load
+        if [ $total_malicious -gt 5 ]; then
+            # More frequent checks if many threats detected
+            sleep 30
+        else
+            sleep $SCAN_INTERVAL
+        fi
+    done
+}
+
+# Trap signals for clean exit and reporting
+trap "save_cache; generate_threat_report; log_message 'MalScript Exterminator Hardened Fangbull stopped' 'CRITICAL'; exit 0" SIGTERM SIGINT
+
+main 

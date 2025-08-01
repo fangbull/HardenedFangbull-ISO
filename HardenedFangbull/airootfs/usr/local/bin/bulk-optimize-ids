@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# Bulk IDS Optimization Script - Hardened Fangbull
+# Optimizes all IDS scripts with efficient logging and performance improvements
+# Author: root0emir
+
+IDS_SCRIPTS=(
+    "hidden_binary_execution_catcher"
+    "malscript_exterminator" 
+    "memory_resident_process_checker"
+    "netlink_monitor_watchdog"
+    "rootshell_injection_mitigator"
+    "shell_fork_bomb_terminator"
+    "tty_hijack_detector"
+    "zombie_process_hunter"
+)
+
+SCRIPT_DIR="/usr/local/bin"
+
+# Function to optimize each script
+optimize_script() {
+    local script="$1"
+    local script_path="$SCRIPT_DIR/$script"
+    
+    if [ ! -f "$script_path" ]; then
+        echo "Warning: $script not found"
+        return 1
+    fi
+    
+    echo "Optimizing $script..."
+    
+    # Create backup
+    cp "$script_path" "$script_path.backup"
+    
+    # Apply optimizations using sed
+    sed -i '
+        # Add log manager after shebang
+        /^#!/a\
+\
+# Load optimized log manager\
+source /usr/local/bin/fangbull-log-manager 2>/dev/null || {\
+    echo "Error: fangbull-log-manager not found" >&2\
+    exit 1\
+}
+        
+        # Update title to include (Optimized)
+        s/# \([^-]*\) - Hardened Fangbull$/# \1 - Hardened Fangbull (Optimized)/
+        
+        # Add performance optimization note
+        /^# Advanced detection/a\
+# Performance optimized with efficient logging
+        
+        # Replace LOG_FILE with COMPONENT_NAME
+        s/LOG_FILE=".*"/COMPONENT_NAME="'$(echo $script | sed 's/_/-/g')'"/
+        
+        # Remove LOG_MAX_SIZE
+        /LOG_MAX_SIZE=/d
+        
+        # Increase scan intervals for better performance
+        s/SCAN_INTERVAL=[0-9]*/SCAN_INTERVAL=60/
+        s/INTERVAL=[0-9]*/INTERVAL=60/
+        
+        # Adjust thresholds to reduce false positives
+        s/SEVERITY_THRESHOLD=[0-9]*/SEVERITY_THRESHOLD=75/
+        s/THRESHOLD=[0-9]*/THRESHOLD=75/
+        s/SCORE_THRESHOLD=[0-9]*/SCORE_THRESHOLD=75/
+        
+        # Replace old log function with optimized one
+        /^log_message() {/,/^}/ {
+            c\
+log_message() {\
+    local message="$1"\
+    local level="${2:-INFO}"\
+    fangbull_log "$level" "$COMPONENT_NAME" "$message"\
+}
+        }
+        
+        # Remove old rotate_log function
+        /^rotate_log() {/,/^}/d
+        
+        # Add performance counters after configuration
+        /^# Create required directories/i\
+\
+# Performance counters\
+declare -A PERF_COUNTERS=(\
+    ["scans_completed"]=0\
+    ["threats_detected"]=0\
+    ["cache_hits"]=0\
+)\
+MAX_CONCURRENT_SCANS=2
+        
+    ' "$script_path"
+    
+    echo "✓ Optimized $script"
+}
+
+# Main function
+main() {
+    echo "Starting bulk IDS optimization..."
+    
+    for script in "${IDS_SCRIPTS[@]}"; do
+        optimize_script "$script"
+    done
+    
+    echo ""
+    echo "✓ All IDS scripts optimized!"
+    echo "✓ Log manager integration completed"
+    echo "✓ Performance settings optimized"
+    echo "✓ False positive thresholds adjusted"
+}
+
+main "$@"

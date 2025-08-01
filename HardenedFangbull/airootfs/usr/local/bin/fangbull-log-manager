@@ -1,0 +1,273 @@
+#!/bin/bash
+
+# Fangbull Log Manager - Optimized logging functions for IDS
+# Prevents log explosion and provides efficient log management
+# Author: root0emir
+# Last Modified: 2025-01-08
+
+# Configuration
+LOG_BASE_DIR="/var/log/fangbull-ids"
+MAX_LOG_SIZE=5242880      # 5MB per log file
+MAX_CACHE_SIZE=1048576    # 1MB per cache file
+MAX_SAMPLE_SIZE=52428800  # 50MB per sample directory
+LOG_RETENTION_DAYS=7
+CACHE_RETENTION_DAYS=1
+SAMPLE_RETENTION_DAYS=3
+
+# Log levels (only these will be written to disk)
+declare -A LOG_LEVELS=(
+    ["CRITICAL"]=1
+    ["ERROR"]=2
+    ["WARNING"]=3
+    ["INFO"]=4
+)
+
+# Current log level (default: WARNING and above)
+CURRENT_LOG_LEVEL=3
+
+# Performance counters
+declare -A LOG_COUNTERS=(
+    ["total_logs"]=0
+    ["dropped_logs"]=0
+    ["rotated_logs"]=0
+)
+
+# Initialize log manager
+init_log_manager() {
+    # Create base directory
+    mkdir -p "$LOG_BASE_DIR" 2>/dev/null
+    
+    # Set appropriate permissions
+    chmod 750 "$LOG_BASE_DIR" 2>/dev/null
+    chown root:root "$LOG_BASE_DIR" 2>/dev/null
+    
+    # Create performance stats file
+    echo "# Fangbull Log Manager Statistics" > "$LOG_BASE_DIR/log_stats.txt"
+    echo "Initialized: $(date)" >> "$LOG_BASE_DIR/log_stats.txt"
+}
+
+# Optimized log rotation function
+rotate_log_if_needed() {
+    local log_file="$1"
+    local max_size="${2:-$MAX_LOG_SIZE}"
+    
+    if [ ! -f "$log_file" ]; then
+        return 0
+    fi
+    
+    local file_size=$(stat -c%s "$log_file" 2>/dev/null || echo 0)
+    
+    if [ "$file_size" -gt "$max_size" ]; then
+        local timestamp=$(date +%Y%m%d_%H%M%S)
+        local rotated_file="${log_file}.${timestamp}"
+        
+        # Move and compress in background
+        {
+            mv "$log_file" "$rotated_file" 2>/dev/null
+            gzip -f "$rotated_file" 2>/dev/null
+            
+            # Clean old rotated logs (keep only last 3)
+            local log_dir=$(dirname "$log_file")
+            local log_name=$(basename "$log_file")
+            find "$log_dir" -name "${log_name}.*" -type f | sort -r | tail -n +4 | xargs rm -f 2>/dev/null
+        } &
+        
+        LOG_COUNTERS["rotated_logs"]=$((${LOG_COUNTERS["rotated_logs"]} + 1))
+        return 0
+    fi
+    
+    return 1
+}
+
+# Efficient log function with level filtering
+fangbull_log() {
+    local level="$1"
+    local component="$2"
+    local message="$3"
+    local log_file="$LOG_BASE_DIR/${component}.log"
+    
+    # Check if we should log this level
+    local level_num=${LOG_LEVELS["$level"]}
+    if [ -z "$level_num" ] || [ "$level_num" -gt "$CURRENT_LOG_LEVEL" ]; then
+        LOG_COUNTERS["dropped_logs"]=$((${LOG_COUNTERS["dropped_logs"]} + 1))
+        return 0
+    fi
+    
+    # Rotate if needed (non-blocking)
+    rotate_log_if_needed "$log_file" &
+    
+    # Write log entry
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" >> "$log_file"
+    
+    LOG_COUNTERS["total_logs"]=$((${LOG_COUNTERS["total_logs"]} + 1))
+    
+    # For CRITICAL logs, also write to syslog
+    if [ "$level" = "CRITICAL" ]; then
+        logger -t "fangbull-ids-$component" -p daemon.crit "$message"
+    fi
+}
+
+# Optimized cache management
+manage_cache() {
+    local cache_file="$1"
+    local max_size="${2:-$MAX_CACHE_SIZE}"
+    
+    if [ ! -f "$cache_file" ]; then
+        return 0
+    fi
+    
+    local file_size=$(stat -c%s "$cache_file" 2>/dev/null || echo 0)
+    
+    if [ "$file_size" -gt "$max_size" ]; then
+        # Keep only the last 50% of the cache
+        local temp_cache="${cache_file}.tmp"
+        tail -n $(($(wc -l < "$cache_file") / 2)) "$cache_file" > "$temp_cache" 2>/dev/null
+        mv "$temp_cache" "$cache_file" 2>/dev/null
+    fi
+}
+
+# Sample directory cleanup
+cleanup_samples() {
+    local sample_dir="$1"
+    local max_size="${2:-$MAX_SAMPLE_SIZE}"
+    local retention_days="${3:-$SAMPLE_RETENTION_DAYS}"
+    
+    if [ ! -d "$sample_dir" ]; then
+        return 0
+    fi
+    
+    # Remove old samples first
+    find "$sample_dir" -type f -mtime +$retention_days -delete 2>/dev/null
+    
+    # Check total size and remove oldest if needed
+    local total_size=$(du -sb "$sample_dir" 2>/dev/null | cut -f1)
+    
+    if [ "$total_size" -gt "$max_size" ]; then
+        # Remove oldest files until under limit
+        find "$sample_dir" -type f -printf '%T@ %p\n' | sort -n | while read -r line; do
+            local file=$(echo "$line" | cut -d' ' -f2-)
+            rm -f "$file" 2>/dev/null
+            
+            total_size=$(du -sb "$sample_dir" 2>/dev/null | cut -f1)
+            if [ "$total_size" -le "$max_size" ]; then
+                break
+            fi
+        done
+    fi
+}
+
+# Performance monitoring
+update_performance_stats() {
+    local stats_file="$LOG_BASE_DIR/log_stats.txt"
+    
+    {
+        echo "# Fangbull Log Manager Statistics"
+        echo "Last Updated: $(date)"
+        echo "Total Logs Written: ${LOG_COUNTERS["total_logs"]}"
+        echo "Logs Dropped (Level Filter): ${LOG_COUNTERS["dropped_logs"]}"
+        echo "Log Rotations: ${LOG_COUNTERS["rotated_logs"]}"
+        echo "Current Log Level: $CURRENT_LOG_LEVEL"
+        echo "Disk Usage: $(du -sh "$LOG_BASE_DIR" 2>/dev/null | cut -f1)"
+        echo ""
+        echo "# Per-component log sizes:"
+        find "$LOG_BASE_DIR" -name "*.log" -type f -exec ls -lh {} \; | awk '{print $9 ": " $5}'
+    } > "$stats_file"
+}
+
+# Cleanup old logs and optimize disk usage
+optimize_logs() {
+    echo "Starting log optimization..."
+    
+    # Clean up old rotated logs
+    find "$LOG_BASE_DIR" -name "*.log.*" -type f -mtime +$LOG_RETENTION_DAYS -delete 2>/dev/null
+    
+    # Clean up old cache files
+    find "$LOG_BASE_DIR" -name "*.cache*" -type f -mtime +$CACHE_RETENTION_DAYS -delete 2>/dev/null
+    
+    # Clean up sample directories
+    for sample_dir in "$LOG_BASE_DIR"/*/samples; do
+        if [ -d "$sample_dir" ]; then
+            cleanup_samples "$sample_dir"
+        fi
+    done
+    
+    # Update performance stats
+    update_performance_stats
+    
+    echo "Log optimization completed."
+}
+
+# Set log level dynamically
+set_log_level() {
+    local level="$1"
+    local level_num=${LOG_LEVELS["$level"]}
+    
+    if [ -n "$level_num" ]; then
+        CURRENT_LOG_LEVEL=$level_num
+        echo "Log level set to: $level ($level_num)"
+    else
+        echo "Invalid log level: $level"
+        echo "Valid levels: ${!LOG_LEVELS[@]}"
+        return 1
+    fi
+}
+
+# Emergency log cleanup (when disk is full)
+emergency_cleanup() {
+    echo "EMERGENCY: Performing aggressive log cleanup..."
+    
+    # Remove all rotated logs immediately
+    find "$LOG_BASE_DIR" -name "*.log.*" -type f -delete 2>/dev/null
+    
+    # Truncate current logs to last 100 lines
+    for log_file in "$LOG_BASE_DIR"/*.log; do
+        if [ -f "$log_file" ]; then
+            tail -n 100 "$log_file" > "${log_file}.tmp" 2>/dev/null
+            mv "${log_file}.tmp" "$log_file" 2>/dev/null
+        fi
+    done
+    
+    # Remove all cache files
+    find "$LOG_BASE_DIR" -name "*.cache*" -type f -delete 2>/dev/null
+    
+    # Remove all sample directories
+    find "$LOG_BASE_DIR" -name "samples" -type d -exec rm -rf {} + 2>/dev/null
+    
+    echo "Emergency cleanup completed."
+}
+
+# Main function for command-line usage
+main() {
+    case "$1" in
+        "init")
+            init_log_manager
+            ;;
+        "optimize")
+            optimize_logs
+            ;;
+        "emergency")
+            emergency_cleanup
+            ;;
+        "set-level")
+            set_log_level "$2"
+            ;;
+        "stats")
+            update_performance_stats
+            cat "$LOG_BASE_DIR/log_stats.txt"
+            ;;
+        *)
+            echo "Usage: $0 {init|optimize|emergency|set-level LEVEL|stats}"
+            echo "Levels: ${!LOG_LEVELS[@]}"
+            exit 1
+            ;;
+    esac
+}
+
+# If script is executed directly
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi
+
+# Initialize on first load
+init_log_manager

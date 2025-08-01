@@ -1,0 +1,63 @@
+# General AUR helpers denial profile
+# This profile provides a catch-all for any AUR helper attempts
+# Author: root0emir
+# Last Modified: 2025-01-08
+
+#include <tunables/global>
+
+# Generic AUR helper patterns
+/{usr/,}{bin,sbin}/yay {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+/{usr/,}{bin,sbin}/paru {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+/{usr/,}{bin,sbin}/trizen {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+/{usr/,}{bin,sbin}/pikaur {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+/{usr/,}{bin,sbin}/chaotic-aur {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+# Additional AUR helpers that might be installed
+/{usr/,}{bin,sbin}/aurman {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+/{usr/,}{bin,sbin}/pakku {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+/{usr/,}{bin,sbin}/aura {
+  deny /** rwklmx,
+  audit deny /** rwklmx,
+}
+
+# Prevent installation of AUR helpers via makepkg
+/usr/bin/makepkg {
+  # Allow normal package building but deny AUR helper builds
+  deny /**/yay/** rwklmx,
+  deny /**/paru/** rwklmx,
+  deny /**/trizen/** rwklmx,
+  deny /**/pikaur/** rwklmx,
+  deny /**/chaotic-aur/** rwklmx,
+  audit deny /**/yay/** rwklmx,
+  audit deny /**/paru/** rwklmx,
+  audit deny /**/trizen/** rwklmx,
+  audit deny /**/pikaur/** rwklmx,
+  audit deny /**/chaotic-aur/** rwklmx,
+}

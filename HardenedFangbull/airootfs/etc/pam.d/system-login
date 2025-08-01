@@ -1,0 +1,26 @@
+#%PAM-1.0
+
+auth       required   pam_faillock.so      preauth
+auth       required   pam_shells.so
+auth       requisite  pam_nologin.so
+
+
+auth       required   pam_unix.so
+auth       [default=die] pam_faillock.so authfail
+auth       sufficient pam_faillock.so authsucc
+
+
+account    required   pam_faillock.so
+account    required   pam_access.so
+account    required   pam_nologin.so
+
+
+password   required   pam_unix.so
+
+session    optional   pam_loginuid.so
+session    optional   pam_keyinit.so       force revoke
+session    optional   pam_motd.so          motd=/etc/motd
+session    optional   pam_mail.so          dir=/var/spool/mail standard quiet
+session    required   pam_env.so
+
+auth       optional   pam_faildelay.so     delay=5000000

@@ -1,0 +1,16 @@
+#!/bin/bash
+
+if grep -q "archisolabel=" /proc/cmdline; then
+    exit 0
+fi
+
+rm -f /usr/local/bin/hardened-securonis-installer
+rm -f /usr/share/applications/install-system.desktop
+
+systemctl disable securonis-firstboot.service
+
+rm -f /etc/systemd/system/securonis-firstboot.service
+rm -f /usr/bin/firstboot
+
+
+

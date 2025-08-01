@@ -1,0 +1,948 @@
+#!/bin/bash
+
+# Ghost Service Killer - Hardened Fangbull (Optimized)
+# Advanced detection and elimination of suspicious binaries with memory-safe operations
+# Performance optimized with efficient logging
+
+# Load optimized log manager
+source /usr/local/bin/fangbull-log-manager 2>/dev/null || {
+    echo "Error: fangbull-log-manager not found" >&2
+    exit 1
+}
+
+# Source common functions
+if [ -f "/usr/local/bin/common_functions.sh" ]; then
+    source "/usr/local/bin/common_functions.sh"
+fi
+
+# Configuration with optimized settings
+COMPONENT_NAME="ghost_service"
+CACHE_FILE="/var/log/fangbull-ids/ghost_killer.cache"
+SAMPLE_DIR="/var/log/fangbull-ids/samples"
+INTEL_DB="/var/log/fangbull-ids/threat_intel.db"
+SCAN_INTERVAL=60      # Increased from 45 to reduce CPU load
+HASH_BLACKLIST_FILE="/var/log/fangbull-ids/hash_blacklist.txt"
+HASH_WHITELIST_FILE="/var/log/fangbull-ids/hash_whitelist.txt"
+MEMORY_DUMP_DIR="/var/log/fangbull-ids/memory_dumps"
+THREAT_SCORE_THRESHOLD=75  # Increased from 70 to reduce false positives
+MAX_CACHE_ENTRIES=500      # Reduced from 1000 to save memory
+MAX_SAMPLE_SIZE=5242880    # Reduced from 10MB to 5MB
+MAX_MEMORY_DUMP_SIZE=26214400  # Reduced from 50MB to 25MB
+MAX_PROCESSES_PER_SCAN=300 # Reduced from 500 to limit resource usage
+MAX_BUFFER_SIZE=8192       # Reduced from 16KB to 8KB
+MAX_CONCURRENT_SCANS=2     # Limit concurrent operations
+
+# Performance counters
+declare -A PERF_COUNTERS=(
+    ["scans_completed"]=0
+    ["threats_detected"]=0
+    ["false_positives"]=0
+    ["cache_hits"]=0
+    ["processes_scanned"]=0
+)
+
+# Create required directories with secure permissions
+mkdir -p "$(dirname "$CACHE_FILE")" 2>/dev/null
+chmod 750 "$(dirname "$CACHE_FILE")" 2>/dev/null
+mkdir -p "$SAMPLE_DIR" 2>/dev/null
+chmod 750 "$SAMPLE_DIR" 2>/dev/null
+mkdir -p "$MEMORY_DUMP_DIR" 2>/dev/null
+chmod 750 "$MEMORY_DUMP_DIR" 2>/dev/null
+mkdir -p "$(dirname "$INTEL_DB")" 2>/dev/null
+chmod 750 "$(dirname "$INTEL_DB")" 2>/dev/null
+
+# Initialize hash lists if they don't exist
+touch "$HASH_BLACKLIST_FILE" 2>/dev/null
+touch "$HASH_WHITELIST_FILE" 2>/dev/null
+
+# Optimized cache management
+manage_performance_cache() {
+    manage_cache "$CACHE_FILE"
+    cleanup_samples "$SAMPLE_DIR"
+    cleanup_samples "$MEMORY_DUMP_DIR" "$MAX_MEMORY_DUMP_SIZE"
+    
+    # Update performance counters every 50 scans
+    if [ $((${PERF_COUNTERS["scans_completed"]} % 50)) -eq 0 ]; then
+        local stats_file="/var/log/fangbull-ids/ghost_performance.stats"
+        {
+            echo "Scans Completed: ${PERF_COUNTERS["scans_completed"]}"
+            echo "Threats Detected: ${PERF_COUNTERS["threats_detected"]}"
+            echo "Cache Hits: ${PERF_COUNTERS["cache_hits"]}"
+            echo "Processes Scanned: ${PERF_COUNTERS["processes_scanned"]}"
+            echo "Last Update: $(date)"
+        } > "$stats_file"
+    fi
+}
+
+# Fast hash-based cache lookup
+check_process_cache() {
+    local pid="$1"
+    local exe_hash=$(readlink -f /proc/$pid/exe 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)
+    
+    if [ -n "$exe_hash" ] && [ -f "$CACHE_FILE" ] && grep -q "^$exe_hash" "$CACHE_FILE" 2>/dev/null; then
+        PERF_COUNTERS["cache_hits"]=$((${PERF_COUNTERS["cache_hits"]} + 1))
+        return 0  # Process already processed
+    fi
+    
+    return 1  # Process needs processing
+}
+
+# Add process to cache
+add_to_cache() {
+    local pid="$1"
+    local result="$2"
+    local exe_hash=$(readlink -f /proc/$pid/exe 2>/dev/null | sha256sum 2>/dev/null | cut -d' ' -f1)
+    
+    if [ -n "$exe_hash" ]; then
+        echo "$exe_hash:$result:$(date +%s)" >> "$CACHE_FILE"
+    fi
+        
+        # Compress with size limit check
+        if [ -f "$backup_file" ] && [ $(stat -c%s "$backup_file" 2>/dev/null || echo 0) -lt $((LOG_MAX_SIZE*2)) ]; then
+            gzip -f "$backup_file" 2>/dev/null
+        fi
+        
+        # Truncate original log file safely
+        : > "$LOG_FILE"
+        chmod 640 "$LOG_FILE" 2>/dev/null
+    fi
+}
+
+# Optimized logging function
+log_message() {
+    local message="$1"
+    local level="${2:-INFO}"
+    fangbull_log "$level" "$COMPONENT_NAME" "$message"
+}
+
+# Suspicious locations to monitor - comprehensive list
+SUSPICIOUS_DIRS=(
+    "/tmp"
+    "/dev/shm"
+    "/var/tmp"
+    "/run/user"
+    "/run/shm"
+    "/proc/self/fd"
+    "/proc/self/map_files"
+)
+
+# Enhanced cache system with timestamps and metadata
+declare -A LEGITIMATE_CACHE   # Format: path -> "timestamp:hash:score"
+declare -A MALICIOUS_CACHE    # Format: path -> "timestamp:hash:score:reason"
+declare -A HASH_CACHE         # Format: hash -> "timestamp:verdict:count"
+declare -A PATH_ACCESS_CACHE  # Format: path -> "timestamp:access_count"
+
+# Cache statistics
+CACHE_HITS=0
+CACHE_MISSES=0
+CACHE_LAST_PRUNE=$(date +%s)
+CACHE_MAX_AGE=3600  # 1 hour maximum cache age for legitimate entries
+
+# Load cache with validation and metadata
+if [ -f "$CACHE_FILE" ] && [ $(stat -c%s "$CACHE_FILE" 2>/dev/null || echo 0) -lt 5242880 ]; then
+    log_message "Loading process cache from $CACHE_FILE" "CRITICAL"
+    
+    # Create a temporary file to validate cache before loading
+    local tmp_valid_cache=$(mktemp)
+    if [ -n "$tmp_valid_cache" ] && [ -w "$tmp_valid_cache" ]; then
+        # Only load valid entries
+        while IFS=: read -r type path hash extra; do
+            # Skip invalid or empty entries
+            if [ -z "$type" ] || [ -z "$path" ] || [ -z "$hash" ]; then
+                continue
+            fi
+            
+            # Add current timestamp if missing
+            if [ -z "$extra" ]; then
+                extra="$(date +%s):0"
+            fi
+            
+            # Validate entry format and add to cache
+            if [ "$type" = "LEGITIMATE" ]; then
+                # Only add if path still exists or hash is known good
+                if [ -e "$path" ] || grep -q "^$hash$" "$HASH_WHITELIST_FILE" 2>/dev/null; then
+                    echo "$type:$path:$hash:$extra" >> "$tmp_valid_cache"
+                    LEGITIMATE_CACHE["$path"]="$extra:$hash"
+                    
+                    # Update hash cache
+                    HASH_CACHE["$hash"]="$(date +%s):legitimate:$((${HASH_CACHE["$hash"]:(-1)}+1))"
+                fi
+            elif [ "$type" = "MALICIOUS" ]; then
+                echo "$type:$path:$hash:$extra" >> "$tmp_valid_cache"
+                MALICIOUS_CACHE["$path"]="$extra:$hash"
+                
+                # Update hash cache
+                HASH_CACHE["$hash"]="$(date +%s):malicious:$((${HASH_CACHE["$hash"]:(-1)}+1))"
+            fi
+        done < "$CACHE_FILE"
+        
+        # If we have valid entries, replace the cache file
+        if [ -s "$tmp_valid_cache" ]; then
+            mv "$tmp_valid_cache" "$CACHE_FILE"
+            chmod 640 "$CACHE_FILE" 2>/dev/null
+        else
+            rm -f "$tmp_valid_cache"
+        fi
+    fi
+    
+    log_message "Loaded ${#LEGITIMATE_CACHE[@]} legitimate and ${#MALICIOUS_CACHE[@]} malicious entries" "CRITICAL"
+fi
+
+# Load hash blacklist/whitelist
+load_hash_lists() {
+    # Load blacklist
+    if [ -f "$HASH_BLACKLIST_FILE" ]; then
+        while IFS= read -r hash; do
+            if [ -n "$hash" ]; then
+                MALICIOUS_CACHE["HASH:$hash"]=1
+            fi
+        done < "$HASH_BLACKLIST_FILE"
+    fi
+    
+    # Load whitelist
+    if [ -f "$HASH_WHITELIST_FILE" ]; then
+        while IFS= read -r hash; do
+            if [ -n "$hash" ]; then
+                LEGITIMATE_CACHE["HASH:$hash"]=1
+            fi
+        done < "$HASH_WHITELIST_FILE"
+    fi
+}
+
+# Enhanced cache management with prioritization, aging, and statistics
+save_cache() {
+    # Check if we need to prune the cache first
+    local current_time=$(date +%s)
+    local prune_interval=900  # 15 minutes between pruning operations
+    
+    # Create temp file first to avoid race conditions
+    local tmp_file=$(mktemp)
+    if [ -z "$tmp_file" ] || [ ! -w "$tmp_file" ]; then
+        log_message "Failed to create temporary file for cache update" "CRITICAL"
+        return 1
+    fi
+    
+    # Log cache statistics
+    log_message "Cache statistics - Hits: $CACHE_HITS, Misses: $CACHE_MISSES, Hit ratio: $(( CACHE_HITS * 100 / (CACHE_HITS + CACHE_MISSES + 1) ))%" "CRITICAL"
+    
+    # Prune old entries if needed
+    if [ $((current_time - CACHE_LAST_PRUNE)) -gt $prune_interval ]; then
+        log_message "Pruning cache - before: ${#LEGITIMATE_CACHE[@]} legitimate, ${#MALICIOUS_CACHE[@]} malicious entries" "CRITICAL"
+        
+        # Calculate cutoff time for aging
+        local cutoff_time=$((current_time - CACHE_MAX_AGE))
+        
+        # Identify old legitimate entries to remove
+        local old_entries=()
+        for path in "${!LEGITIMATE_CACHE[@]}"; do
+            local entry_data="${LEGITIMATE_CACHE[$path]}"
+            local entry_time=$(echo "$entry_data" | cut -d: -f1)
+            
+            # Remove if older than cutoff or path no longer exists
+            if [ "$entry_time" -lt "$cutoff_time" ] || [ ! -e "$path" ]; then
+                old_entries+=("$path")
+            fi
+        done
+        
+        # Remove old entries
+        for path in "${old_entries[@]}"; do
+            unset LEGITIMATE_CACHE["$path"]
+        done
+        
+        # Update prune timestamp
+        CACHE_LAST_PRUNE=$current_time
+        log_message "Pruned $(( ${#old_entries[@]} )) old cache entries" "CRITICAL"
+        unset old_entries
+    fi
+    
+    # Save legitimate cache with prioritization (most frequently accessed first)
+    log_message "Saving cache with ${#LEGITIMATE_CACHE[@]} legitimate and ${#MALICIOUS_CACHE[@]} malicious entries" "CRITICAL"
+    
+    # Create a sorted list of paths by access frequency
+    declare -A access_counts
+    local paths_to_save=()
+    
+    # Calculate access counts and build array
+    for path in "${!LEGITIMATE_CACHE[@]}"; do
+        if [[ "$path" != HASH:* ]]; then
+            local access_count=0
+            if [ -n "${PATH_ACCESS_CACHE[$path]}" ]; then
+                access_count=$(echo "${PATH_ACCESS_CACHE[$path]}" | cut -d: -f2)
+            fi
+            access_counts["$path"]=$access_count
+            paths_to_save+=("$path")
+        fi
+    done
+    
+    # Sort paths by access count (bubble sort - simple for small arrays)
+    local n=${#paths_to_save[@]}
+    for ((i=0; i<n-1; i++)); do
+        for ((j=0; j<n-i-1; j++)); do
+            if [ "${access_counts[${paths_to_save[$j]}]}" -lt "${access_counts[${paths_to_save[$j+1]}]}" ]; then
+                # Swap
+                local temp="${paths_to_save[$j]}"
+                paths_to_save[$j]="${paths_to_save[$j+1]}"
+                paths_to_save[$j+1]="$temp"
+            fi
+        done
+    done
+    
+    # Save top entries with limit
+    local count=0
+    for path in "${paths_to_save[@]}"; do
+        if [ $count -lt "$MAX_CACHE_ENTRIES" ]; then
+            # Truncate path to prevent buffer overflow
+            local safe_path="${path:0:1024}"
+            local entry_data="${LEGITIMATE_CACHE[$path]}"
+            echo "LEGITIMATE:$safe_path:${entry_data}" >> "$tmp_file"
+            count=$((count + 1))
+        else
+            break
+        fi
+    done
+    
+    # Always save all malicious cache entries (they're more important)
+    for path in "${!MALICIOUS_CACHE[@]}"; do
+        if [[ "$path" != HASH:* ]]; then
+            # Truncate path to prevent buffer overflow
+            local safe_path="${path:0:1024}"
+            local entry_data="${MALICIOUS_CACHE[$path]}"
+            echo "MALICIOUS:$safe_path:${entry_data}" >> "$tmp_file"
+        fi
+    done
+    
+    # Atomic update with size check
+    if [ -s "$tmp_file" ] && [ $(stat -c%s "$tmp_file" 2>/dev/null || echo 0) -lt 2097152 ]; then  # 2MB limit
+        mv "$tmp_file" "$CACHE_FILE" 2>/dev/null
+        chmod 640 "$CACHE_FILE" 2>/dev/null
+        log_message "Cache saved successfully with $count legitimate and ${#MALICIOUS_CACHE[@]} malicious entries" "CRITICAL"
+    else
+        log_message "Cache file too large ($(stat -c%s "$tmp_file" 2>/dev/null || echo 0) bytes) or empty, not updating" "CRITICAL"
+        rm -f "$tmp_file"
+    fi
+    
+    # Reset access counts periodically
+    if [ $((current_time % 86400)) -lt 300 ]; then  # Reset near midnight
+        PATH_ACCESS_CACHE=()
+        log_message "Reset path access counts" "CRITICAL"
+    fi
+    
+    # Clean up
+    unset access_counts
+    unset paths_to_save
+}
+
+# Update threat intelligence database
+update_threat_intel() {
+    local hash=$1
+    local path=$2
+    local score=$3
+    local reason=$4
+    local timestamp=$(date -Iseconds)
+    
+    # Create temp file for atomic write
+    local tmp_file=$(mktemp)
+    
+    # Use jq if available for proper JSON handling
+    if command -v jq >/dev/null 2>&1; then
+        if [ -f "$INTEL_DB" ]; then
+            jq --arg hash "$hash" \
+               --arg path "$path" \
+               --arg score "$score" \
+               --arg reason "$reason" \
+               --arg time "$timestamp" \
+            '.threats[$hash] = {
+                "path": $path,
+                "score": ($score|tonumber),
+                "reason": $reason,
+                "timestamp": $time
+             } | .metadata.last_update = $time' \
+            "$INTEL_DB" > "$tmp_file" 2>/dev/null
+        else
+            echo "{\"threats\":{\"$hash\":{\"path\":\"$path\",\"score\":$score,\"reason\":\"$reason\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+        fi
+    else
+        # Simple fallback if jq not available
+        echo "{\"threats\":{\"$hash\":{\"path\":\"$path\",\"score\":$score,\"reason\":\"$reason\",\"timestamp\":\"$timestamp\"}},\"metadata\":{\"last_update\":\"$timestamp\"}}" > "$tmp_file"
+    fi
+    
+    # Atomic update
+    if [ -s "$tmp_file" ]; then
+        mv "$tmp_file" "$INTEL_DB"
+    else
+        rm -f "$tmp_file"
+    fi
+    
+    # Update blacklist if score is high enough
+    if [ "$score" -ge "$THREAT_SCORE_THRESHOLD" ]; then
+        if ! grep -q "^$hash$" "$HASH_BLACKLIST_FILE" 2>/dev/null; then
+            echo "$hash" >> "$HASH_BLACKLIST_FILE"
+            MALICIOUS_CACHE["HASH:$hash"]=1
+        fi
+    fi
+}
+
+# Advanced detection of suspicious processes
+is_suspicious() {
+    local pid=$1
+    local exe_path=$(readlink -f /proc/$pid/exe 2>/dev/null)
+    
+    # Skip if we can't determine the executable path
+    if [ -z "$exe_path" ] || [ ! -e "/proc/$pid" ]; then
+        return 1
+    fi
+    
+    # Get file hash for cache lookup
+    local hash=$(sha256sum "$exe_path" 2>/dev/null | cut -d' ' -f1)
+    
+    # Check hash blacklist first (fastest check)
+    if [ -n "$hash" ] && [ -n "${MALICIOUS_CACHE["HASH:$hash"]}" ]; then
+        log_message "Process using blacklisted hash detected: PID=$pid, Hash=$hash" "CRITICAL"
+        return 0
+    fi
+    
+    # Check hash whitelist
+    if [ -n "$hash" ] && [ -n "${LEGITIMATE_CACHE["HASH:$hash"]}" ]; then
+        return 1
+    }
+    
+    # Check cache for known paths
+    if [ -n "${LEGITIMATE_CACHE["$exe_path"]}" ]; then
+        return 1
+    fi
+    
+    if [ -n "${MALICIOUS_CACHE["$exe_path"]}" ]; then
+        return 0
+    fi
+    
+    # Calculate threat score
+    local threat_score=0
+    local threat_reason=""
+    
+    # Check if executable is in suspicious directory
+    for dir in "${SUSPICIOUS_DIRS[@]}"; do
+        if [[ "$exe_path" == "$dir"/* ]]; then
+            threat_score=$((threat_score + 40))
+            threat_reason="${threat_reason}Suspicious location; "
+            break
+        fi
+    done
+    
+    # Also check home directories
+    if [[ "$exe_path" == "/home/"*"/.cache/"* ]]; then
+        threat_score=$((threat_score + 30))
+        threat_reason="${threat_reason}Hidden in user cache; "
+    elif [[ "$exe_path" == "/home/"*"/Downloads/"* ]]; then
+        threat_score=$((threat_score + 20))
+        threat_reason="${threat_reason}In user downloads; "
+    elif [[ "$exe_path" == "/home/"*"/."* ]]; then
+        threat_score=$((threat_score + 25))
+        threat_reason="${threat_reason}Hidden in home directory; "
+    fi
+    
+    # Check file properties
+    if [ -f "$exe_path" ]; then
+        # Check permissions
+        local perms=$(stat -c %a "$exe_path" 2>/dev/null)
+        if [ "$perms" = "777" ] || [ "$perms" = "755" ] || [ "$perms" = "4755" ]; then
+            threat_score=$((threat_score + 15))
+            threat_reason="${threat_reason}Suspicious permissions; "
+        fi
+        
+        # Check file type
+        local file_type=$(file -b "$exe_path" 2>/dev/null)
+        if [[ "$file_type" == *"ELF"*"executable"* ]]; then
+            threat_score=$((threat_score + 10))
+            
+            # Advanced ELF checks
+            if readelf -h "$exe_path" 2>/dev/null | grep -q "stripped"; then
+                threat_score=$((threat_score + 15))
+                threat_reason="${threat_reason}Stripped binary; "
+            fi
+            
+            # Check for packed/obfuscated binaries
+            if strings "$exe_path" 2>/dev/null | grep -q -E "UPX|packed|Packed|PACKER|Packer"; then
+                threat_score=$((threat_score + 25))
+                threat_reason="${threat_reason}Packed binary; "
+            fi
+        fi
+    fi
+    
+    # Check process attributes
+    local cmdline=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')
+    if [[ "$cmdline" == *"-connect"* ]] || [[ "$cmdline" == *"reverse"* ]] || 
+       [[ "$cmdline" == *"backdoor"* ]] || [[ "$cmdline" == *"shell"* ]]; then
+        threat_score=$((threat_score + 30))
+        threat_reason="${threat_reason}Suspicious command line; "
+    fi
+    
+    # Check process owner
+    local owner=$(stat -c %U "$exe_path" 2>/dev/null)
+    local current_user=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ "$owner" != "$current_user" ] && [ "$current_user" != "root" ]; then
+        threat_score=$((threat_score + 25))
+        threat_reason="${threat_reason}User/owner mismatch; "
+    fi
+    
+    # Check network connections
+    if command -v lsof >/dev/null 2>&1; then
+        if lsof -p "$pid" 2>/dev/null | grep -q "ESTABLISHED"; then
+            threat_score=$((threat_score + 20))
+            threat_reason="${threat_reason}Active network connection; "
+        fi
+    fi
+    
+    # Check if it's a known legitimate process
+    if is_legitimate "$exe_path" "$pid"; then
+        LEGITIMATE_CACHE["$exe_path"]="$hash"
+        return 1
+    fi
+    
+    # Make decision based on threat score
+    if [ "$threat_score" -ge "$THREAT_SCORE_THRESHOLD" ]; then
+        MALICIOUS_CACHE["$exe_path"]="$hash"
+        update_threat_intel "$hash" "$exe_path" "$threat_score" "$threat_reason"
+        return 0
+    fi
+    
+    # If score is moderate, add to cache but don't take action
+    if [ "$threat_score" -ge 40 ]; then
+        update_threat_intel "$hash" "$exe_path" "$threat_score" "$threat_reason"
+    else
+        LEGITIMATE_CACHE["$exe_path"]="$hash"
+    fi
+    
+    return 1
+}
+
+# Enhanced legitimacy checking
+is_legitimate() {
+    local exe_path=$1
+    local pid=$2
+    
+    # List of known legitimate binaries that might run from temp dirs
+    local legitimate_patterns=(
+        "/tmp/systemd-"
+        "/tmp/firefox"
+        "/tmp/chrome"
+        "/tmp/pulse-"
+        "/tmp/ssh-"
+        "/tmp/pacman"
+        "/tmp/pamac"
+        "/tmp/yay"
+        "/tmp/npm-"
+        "/tmp/python"
+        "/tmp/pip-"
+        "/tmp/tmp-"
+        "/tmp/user-"
+        "/tmp/runtime-"
+        "/tmp/vscode-"
+        "/tmp/electron"
+    )
+    
+    for pattern in "${legitimate_patterns[@]}"; do
+        if [[ "$exe_path" == $pattern* ]]; then
+            return 0
+        fi
+    done
+    
+    # Check if it's owned by root or system users (likely legitimate)
+    local owner=$(stat -c %U "$exe_path" 2>/dev/null)
+    if [ "$owner" = "root" ] || [ "$owner" = "systemd-network" ] || [ "$owner" = "systemd-resolve" ]; then
+        # Additional check for system binaries - verify package ownership
+        if command -v pacman >/dev/null 2>&1; then
+            if pacman -Qo "$exe_path" >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+    fi
+    
+    # Check if it's a short-lived process (might be legitimate)
+    local uptime=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$uptime" ] && [ "$uptime" -lt 10 ]; then
+        # Give very new processes a chance
+        return 0
+    fi
+    
+    # Check if it's a common development tool
+    local cmd=$(ps -o comm= -p "$pid" 2>/dev/null)
+    local dev_tools=("gcc" "g++" "make" "python" "node" "npm" "cargo" "rustc" "java" "javac" "perl" "ruby")
+    for tool in "${dev_tools[@]}"; do
+        if [ "$cmd" = "$tool" ]; then
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+# Create memory dump of suspicious process with size limits and error handling
+create_memory_dump() {
+    local pid=$1
+    local hash=$2
+    
+    # Validate inputs
+    if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+        log_message "Invalid PID format for memory dump: $pid" "CRITICAL"
+        return 1
+    fi
+    
+    # Check if process still exists
+    if [ ! -d "/proc/$pid" ]; then
+        log_message "Process $pid no longer exists, cannot create memory dump" "CRITICAL"
+        return 1
+    }
+    
+    if [ -d "/proc/$pid/map_files" ] && command -v dd >/dev/null 2>&1; then
+        # Create unique dump directory with secure permissions
+        local timestamp=$(date +%Y%m%d%H%M%S)
+        local dump_dir="$MEMORY_DUMP_DIR/pid${pid}_${hash:0:16}_$timestamp"
+        mkdir -p "$dump_dir" 2>/dev/null
+        chmod 750 "$dump_dir" 2>/dev/null
+        
+        # Check disk space before proceeding
+        local free_space=$(df -P "$MEMORY_DUMP_DIR" | awk 'NR==2 {print $4}')
+        if [ "$free_space" -lt 104857600 ]; then  # At least 100MB free
+            log_message "Insufficient disk space for memory dump (PID=$pid)" "CRITICAL"
+            return 1
+        fi
+        
+        # Create memory map file with size limit
+        local map_file="$dump_dir/memory.map"
+        head -c 1048576 "/proc/$pid/maps" > "$map_file" 2>/dev/null
+        chmod 640 "$map_file" 2>/dev/null
+        
+        # Dump memory regions
+        log_message "Creating memory dump for PID=$pid" "CRITICAL"
+        
+        # Only dump important regions to avoid excessive disk usage
+        local count=0
+        local total_size=0
+        
+        # Read maps with line limit to prevent memory issues
+        head -c 1048576 "/proc/$pid/maps" | while read -r line && [ $total_size -lt $MAX_MEMORY_DUMP_SIZE ]; do
+            # Look for executable or writable+executable regions
+            if [[ "$line" =~ ^([0-9a-f]+)-([0-9a-f]+)\ [r-][w-][x-] ]] || [[ "$line" =~ heap|stack|libc|ld-linux ]]; then
+                local start="0x${BASH_REMATCH[1]}"
+                local end="0x${BASH_REMATCH[2]}"
+                local size=$((end - start))
+                
+                # Only dump reasonably sized regions
+                if [ "$size" -lt 10485760 ] && [ "$size" -gt 4096 ]; then
+                    local region_file="$dump_dir/region_${count}.dump"
+                    
+                    # Use timeout to prevent hanging
+                    timeout 5s dd if="/proc/$pid/mem" bs=4096 skip=$((start / 4096)) count=$((size / 4096)) of="$region_file" 2>/dev/null
+                    
+                    # Check if dump was successful
+                    if [ -f "$region_file" ] && [ -s "$region_file" ]; then
+                        chmod 640 "$region_file" 2>/dev/null
+                        count=$((count + 1))
+                        total_size=$((total_size + size))
+                        
+                        # Add region info to index
+                        echo "Region $count: $line" >> "$dump_dir/regions.txt"
+                    else
+                        rm -f "$region_file" 2>/dev/null
+                    fi
+                    
+                    # Limit number of regions
+                    if [ "$count" -ge 8 ]; then
+                        break
+                    fi
+                fi
+            fi
+        done
+        
+        # Create summary file
+        {
+            echo "PID: $pid"
+            echo "Hash: ${hash:0:64}"
+            echo "Dump time: $(date -Iseconds)"
+            echo "Regions dumped: $count"
+            echo "Total size: $total_size bytes"
+        } > "$dump_dir/summary.txt"
+        chmod 640 "$dump_dir/summary.txt" 2>/dev/null
+        
+        log_message "Memory dump created with $count regions ($((total_size/1024)) KB)" "CRITICAL"
+    else
+        log_message "Cannot create memory dump - required tools or permissions missing" "CRITICAL"
+    fi
+}
+
+# Enhanced malicious process handling
+handle_malicious_process() {
+    local pid=$1
+    local exe_path=$(readlink -f /proc/$pid/exe 2>/dev/null)
+    local user=$(ps -o user= -p "$pid" 2>/dev/null)
+    
+    # Get hash for intelligence database
+    local hash=$(sha256sum "$exe_path" 2>/dev/null | cut -d' ' -f1)
+    if [ -z "$hash" ]; then
+        hash="unknown"
+    fi
+    
+    # Log detailed information
+    log_message "Malicious process detected: PID=$pid, User=$user, Path=$exe_path, Hash=$hash" "CRITICAL"
+    
+    # Collect additional forensic data
+    local cmdline=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')
+    local cwd=$(readlink -f /proc/$pid/cwd 2>/dev/null)
+    local parent_pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    local parent_cmd=$(ps -o cmd= -p "$parent_pid" 2>/dev/null)
+    
+    log_message "Process details: CWD=$cwd, Parent PID=$parent_pid, Parent CMD=$parent_cmd" "CRITICAL"
+    log_message "Command line: $cmdline" "CRITICAL"
+    
+    # Create memory dump for advanced forensics
+    create_memory_dump "$pid" "$hash"
+    
+    # Save a copy of the binary for analysis if it still exists
+    if [ -f "$exe_path" ]; then
+        # Create a directory for this specific threat
+        local threat_dir="$SAMPLE_DIR/$hash"
+        mkdir -p "$threat_dir" 2>/dev/null
+        
+        # Copy the binary
+        cp "$exe_path" "$threat_dir/binary" 2>/dev/null
+        
+        # Save metadata
+        {
+            echo "Path: $exe_path"
+            echo "Hash: $hash"
+            echo "User: $user"
+            echo "PID: $pid"
+            echo "Command line: $cmdline"
+            echo "CWD: $cwd"
+            echo "Parent PID: $parent_pid"
+            echo "Parent command: $parent_cmd"
+            echo "Detection time: $(date -Iseconds)"
+            echo "File type: $(file -b "$exe_path" 2>/dev/null)"
+            echo "Permissions: $(stat -c %a "$exe_path" 2>/dev/null)"
+            echo "Owner: $(stat -c %U "$exe_path" 2>/dev/null)"
+            echo "Size: $(stat -c %s "$exe_path" 2>/dev/null) bytes"
+        } > "$threat_dir/metadata.txt"
+        
+        # Extract strings for analysis
+        strings "$exe_path" > "$threat_dir/strings.txt" 2>/dev/null
+    fi
+    
+    # Check for other instances of the same binary
+    if [ -n "$hash" ] && [ "$hash" != "unknown" ]; then
+        local other_pids=$(find /proc -maxdepth 1 -regex '/proc/[0-9]+' -printf "%f\n" 2>/dev/null | 
+                          xargs -I{} sh -c "if [ -e /proc/{}/exe ]; then readlink -f /proc/{}/exe 2>/dev/null | xargs sha256sum 2>/dev/null | grep -q '^$hash ' && echo {}; fi")
+        
+        if [ -n "$other_pids" ]; then
+            log_message "Found additional instances of the same binary: $other_pids" "CRITICAL"
+        fi
+    fi
+    
+    # Kill the process and its children
+    log_message "Terminating process tree starting at PID=$pid" "CRITICAL"
+    pkill -9 -P "$pid" 2>/dev/null  # Kill children first
+    kill -9 "$pid" 2>/dev/null      # Then kill the parent
+    
+    # Add to blacklist
+    if [ -n "$hash" ] && [ "$hash" != "unknown" ]; then
+        if ! grep -q "^$hash$" "$HASH_BLACKLIST_FILE" 2>/dev/null; then
+            echo "$hash" >> "$HASH_BLACKLIST_FILE"
+            MALICIOUS_CACHE["HASH:$hash"]=1
+        fi
+    fi
+}
+
+# Generate threat intelligence report
+generate_threat_report() {
+    if [ -f "$INTEL_DB" ] && command -v jq >/dev/null 2>&1; then
+        local threat_count=$(jq '.threats | length' "$INTEL_DB" 2>/dev/null)
+        local high_threats=$(jq '.threats | to_entries[] | select(.value.score >= 80) | .key' "$INTEL_DB" 2>/dev/null | wc -l)
+        
+        log_message "Threat Intelligence Report: Total threats=$threat_count, High severity threats=$high_threats" "CRITICAL"
+        
+        # List top threats
+        local top_threats=$(jq -r '.threats | to_entries | sort_by(.value.score) | reverse | .[0:5] | .[] | "\(.key):\(.value.score):\(.value.reason)"' "$INTEL_DB" 2>/dev/null)
+        if [ -n "$top_threats" ]; then
+            log_message "Top threats:" "CRITICAL"
+            while IFS=: read -r hash score reason; do
+                log_message "  Hash=$hash, Score=$score, Reason=$reason" "CRITICAL"
+            done <<< "$top_threats"
+        fi
+    fi
+}
+
+# Main function - enhanced with advanced detection and memory safety
+main() {
+    log_message "Ghost Service Killer Hardened Fangbull started" "CRITICAL"
+    
+    # Use lower CPU priority and IO priority
+    renice 10 $$ > /dev/null 2>&1
+    ionice -c3 -p $$ > /dev/null 2>&1
+    
+    # Set resource limits to prevent memory bloat
+    ulimit -v 104857600 2>/dev/null  # Virtual memory limit: 100MB
+    ulimit -t 3600 2>/dev/null       # CPU time limit: 1 hour
+    
+    # Load hash blacklist/whitelist
+    load_hash_lists
+    
+    # Counter for maintenance operations with overflow protection
+    local counter=0
+    local report_interval=24  # Generate report every 24 cycles
+    
+    # Define helper function for parallel processing
+    process_pid_for_suspicion() {
+        local pid="$1"
+        
+        # Skip non-numeric PIDs
+        if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+            return 1
+        fi
+        
+        # Skip if process no longer exists
+        if [ ! -d "/proc/$pid" ]; then
+            return 1
+        fi
+        
+        # Check if process is suspicious
+        if [ -f "/usr/local/bin/common_functions.sh" ]; then
+            # Use safer method with common functions
+            if sid_safe_exec 5 "is_suspicious $pid"; then
+                echo "$pid"
+                return 0
+            fi
+        else
+            # Fallback to original method
+            if timeout 5s bash -c "source /dev/stdin <<< 'is_suspicious() { $(declare -f is_suspicious); }; is_suspicious $pid'" 2>/dev/null; then
+                echo "$pid"
+                return 0
+            fi
+        fi
+        
+        return 1
+    }
+    
+    # Export the helper function for parallel processing
+    export -f process_pid_for_suspicion
+    export -f is_suspicious
+    
+    while true; do
+        # Get all running processes - efficient approach with process limit and parallel processing
+        local suspicious_count=0
+        local process_count=0
+        
+        # Use a subshell with timeout to prevent hanging
+        local pids=$(timeout 30s find /proc -maxdepth 1 -regex '/proc/[0-9]+' -printf "%f\n" 2>/dev/null | sort -n | head -n $MAX_PROCESSES_PER_SCAN)
+        
+        # Check if we have common functions for parallel processing
+        if [ -f "/usr/local/bin/common_functions.sh" ] && type sid_parallel_process >/dev/null 2>&1; then
+            log_message "Using parallel processing for suspicious process detection" "CRITICAL"
+            
+            # Process PIDs in parallel
+            local suspicious_pids=$(sid_parallel_process "$pids" process_pid_for_suspicion 4 30)
+            
+            # Process suspicious PIDs
+            if [ -n "$suspicious_pids" ]; then
+                echo "$suspicious_pids" | while read -r pid && [ "$suspicious_count" -lt 10 ]; do
+                    # Skip if process no longer exists
+                    if [ ! -d "/proc/$pid" ]; then
+                        continue
+                    fi
+                    
+                    # Handle suspicious process
+                    if [ -f "/usr/local/bin/common_functions.sh" ]; then
+                        # Use safer method with common functions
+                        sid_safe_exec 60 "handle_malicious_process $pid"
+                    else
+                        # Fallback to original method
+                        timeout 60s bash -c "source /dev/stdin <<< 'handle_malicious_process() { $(declare -f handle_malicious_process); }; handle_malicious_process $pid'" 2>/dev/null
+                    fi
+                    
+                    suspicious_count=$((suspicious_count + 1))
+                done
+            fi
+            
+            # Count total processes checked
+            process_count=$(echo "$pids" | wc -l)
+        else
+            # Fallback to sequential processing
+            for pid in $pids; do
+                # Apply process limit per scan to prevent excessive CPU usage
+                if [ "$process_count" -ge "$MAX_PROCESSES_PER_SCAN" ]; then
+                    log_message "Process scan limit reached ($MAX_PROCESSES_PER_SCAN), continuing in next cycle" "CRITICAL"
+                    break
+                fi
+                
+                # Skip non-numeric PIDs
+                if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+                    continue
+                fi
+                
+                # Skip if process no longer exists
+                if [ ! -d "/proc/$pid" ]; then
+                    continue
+                fi
+                
+                # Check if process is suspicious with timeout to prevent hanging
+                if timeout 5s bash -c "source /dev/stdin <<< 'is_suspicious() { $(declare -f is_suspicious); }; is_suspicious $pid'" 2>/dev/null; then
+                    # Use timeout for handling to prevent hanging
+                    timeout 60s bash -c "source /dev/stdin <<< 'handle_malicious_process() { $(declare -f handle_malicious_process); }; handle_malicious_process $pid'" 2>/dev/null
+                    suspicious_count=$((suspicious_count + 1))
+                    
+                    # Limit number of handled suspicious processes per cycle
+                    if [ "$suspicious_count" -ge 10 ]; then
+                        log_message "Reached maximum suspicious process handling limit (10), continuing in next cycle" "CRITICAL"
+                        break
+                    fi
+                fi
+                
+                process_count=$((process_count + 1))
+            done
+        fi
+        
+        # Log summary if threats found
+        if [ "$suspicious_count" -gt 0 ]; then
+            log_message "Scan complete: Found and eliminated $suspicious_count suspicious processes (checked $process_count total)" "CRITICAL"
+        fi
+        
+        # Increment counter with overflow protection and perform maintenance periodically
+        counter=$((counter % 1000000 + 1))
+        if [ $((counter % 10)) -eq 0 ]; then
+            save_cache
+        fi
+        
+        # Generate threat report periodically
+        if [ $((counter % report_interval)) -eq 0 ]; then
+            generate_threat_report
+        fi
+        
+        # Periodically clear caches to prevent memory leaks
+        if [ $((counter % 100)) -eq 0 ]; then
+            # Force garbage collection of unused variables
+            unset pids
+            
+            # Check memory usage and log if high
+            local mem_usage=$(ps -o rss= -p $$ 2>/dev/null || echo 0)
+            if [ "$mem_usage" -gt 51200 ]; then  # 50MB threshold
+                log_message "High memory usage detected: $((mem_usage/1024)) MB, performing cleanup" "CRITICAL"
+                
+                # Clean up old memory dumps if space is needed
+                find "$MEMORY_DUMP_DIR" -type f -name "*.dump" -mtime +7 -delete 2>/dev/null
+                find "$MEMORY_DUMP_DIR" -type f -name "*.map" -mtime +7 -delete 2>/dev/null
+            fi
+        fi
+        
+        # Use adaptive sleep to reduce system load
+        if [ "$suspicious_count" -gt 5 ]; then
+            # More frequent checks if many threats detected
+            sleep 30
+        else
+            sleep $SCAN_INTERVAL
+        fi
+    done
+}
+
+# Trap signals for clean exit and reporting
+trap "save_cache; generate_threat_report; log_message 'Ghost Service Killer Hardened Fangbull stopped' 'CRITICAL'; exit 0" SIGTERM SIGINT SIGHUP
+
+# Start the main function
+main 

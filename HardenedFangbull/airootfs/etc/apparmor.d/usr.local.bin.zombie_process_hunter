@@ -1,0 +1,44 @@
+#include <tunables/global>
+
+/usr/local/bin/zombie_process_hunter {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability dac_override,
+  capability kill,
+  capability sys_ptrace,
+
+  /usr/local/bin/zombie_process_hunter r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Process monitoring for zombie detection
+  /proc/ r,
+  /proc/*/stat r,
+  /proc/*/status r,
+  /proc/*/cmdline r,
+  /proc/*/exe r,
+  /proc/loadavg r,
+
+  # System monitoring
+  /sys/fs/cgroup/ r,
+  /sys/fs/cgroup/** r,
+
+  # Fangbull IDS logging and data directories
+  /var/log/fangbull-ids/ rw,
+  /var/log/fangbull-ids/** rw,
+  
+  # Logging
+  /var/log/fangbull-zombie-hunter.log w,
+  /dev/log w,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+
+  # Deny dangerous operations
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny /etc/passwd w,
+  deny /etc/shadow w,
+}

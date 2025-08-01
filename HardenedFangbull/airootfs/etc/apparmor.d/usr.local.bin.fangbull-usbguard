@@ -1,0 +1,217 @@
+# AppArmor profile for fangbull-usbguard
+# USBGuard management tool with comprehensive system access
+# Author: root0emir
+# Last Modified: 2025-01-08
+
+#include <tunables/global>
+
+/usr/local/bin/fangbull-usbguard {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+  #include <abstractions/consoles>
+  #include <abstractions/nameservice>
+
+  # Capabilities needed for USBGuard management
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability fsetid,
+  capability kill,
+  capability setgid,
+  capability setuid,
+  capability sys_ptrace,
+  capability sys_admin,
+
+  # Network access for DNS and system queries
+  network inet dgram,
+  network inet stream,
+  network inet6 dgram,
+  network inet6 stream,
+
+  # Script execution
+  /usr/local/bin/fangbull-usbguard r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # System binaries for USBGuard operations
+  /usr/bin/usbguard Cx -> usbguard,
+  /usr/bin/systemctl Cx -> systemctl,
+  /usr/bin/journalctl Cx -> journalctl,
+  /usr/bin/lsusb Cx -> lsusb,
+  /usr/bin/file Cx -> file,
+  /usr/bin/apparmor_parser Cx -> apparmor_parser,
+  /usr/bin/aa-enforce Cx -> aa_enforce,
+
+  # Text editors for configuration
+  /usr/bin/nano Cx -> editor,
+  /usr/bin/vim Cx -> editor,
+  /usr/bin/vi Cx -> editor,
+
+  # Core utilities
+  /usr/bin/cat ix,
+  /usr/bin/grep ix,
+  /usr/bin/sed ix,
+  /usr/bin/awk ix,
+  /usr/bin/cut ix,
+  /usr/bin/head ix,
+  /usr/bin/tail ix,
+  /usr/bin/wc ix,
+  /usr/bin/sort ix,
+  /usr/bin/uniq ix,
+  /usr/bin/date ix,
+  /usr/bin/basename ix,
+  /usr/bin/dirname ix,
+  /usr/bin/mkdir ix,
+  /usr/bin/cp ix,
+  /usr/bin/mv ix,
+  /usr/bin/chmod ix,
+  /usr/bin/chown ix,
+  /usr/bin/ls ix,
+  /usr/bin/find ix,
+  /usr/bin/xargs ix,
+
+  # USBGuard configuration and rules
+  /etc/usbguard/ r,
+  /etc/usbguard/** rw,
+  /var/lib/usbguard/ r,
+  /var/lib/usbguard/** rw,
+
+  # System configuration access
+  /etc/systemd/system/ r,
+  /etc/systemd/system/usbguard.service r,
+  /run/systemd/system/ r,
+  /run/systemd/system/** r,
+
+  # USB device information
+  /sys/bus/usb/ r,
+  /sys/bus/usb/** r,
+  /sys/devices/ r,
+  /sys/devices/** r,
+  /dev/bus/usb/ r,
+  /dev/bus/usb/** r,
+
+  # Logging
+  /var/log/fangbull-usbguard.log rw,
+  /var/log/usbguard/ r,
+  /var/log/usbguard/** r,
+
+  # Temporary files
+  /tmp/ r,
+  /tmp/** rw,
+  /var/tmp/ r,
+  /var/tmp/** rw,
+
+  # Process and system information
+  /proc/ r,
+  /proc/** r,
+  /sys/ r,
+  /sys/** r,
+
+  # Terminal and console access
+  /dev/tty rw,
+  /dev/tty[0-9]* rw,
+  /dev/pts/[0-9]* rw,
+  /dev/console rw,
+
+  # Standard streams
+  /dev/stdin r,
+  /dev/stdout w,
+  /dev/stderr w,
+  /dev/null rw,
+
+  # Child profiles for external commands
+  profile usbguard {
+    #include <abstractions/base>
+    /usr/bin/usbguard mr,
+    /etc/usbguard/** r,
+    /var/lib/usbguard/** rw,
+    /sys/bus/usb/** r,
+    /sys/devices/** r,
+    /dev/bus/usb/** r,
+    /proc/*/stat r,
+    /proc/*/cmdline r,
+    /dev/stdout w,
+    /dev/stderr w,
+    capability dac_override,
+    capability dac_read_search,
+  }
+
+  profile systemctl {
+    #include <abstractions/base>
+    #include <abstractions/systemd>
+    /usr/bin/systemctl mr,
+    /etc/systemd/system/** r,
+    /run/systemd/system/** r,
+    /proc/1/environ r,
+    /proc/*/stat r,
+    /dev/stdout w,
+    /dev/stderr w,
+    capability sys_admin,
+  }
+
+  profile journalctl {
+    #include <abstractions/base>
+    /usr/bin/journalctl mr,
+    /var/log/journal/** r,
+    /run/log/journal/** r,
+    /proc/*/stat r,
+    /dev/stdout w,
+    /dev/stderr w,
+  }
+
+  profile lsusb {
+    #include <abstractions/base>
+    /usr/bin/lsusb mr,
+    /sys/bus/usb/** r,
+    /sys/devices/** r,
+    /dev/bus/usb/** r,
+    /proc/bus/usb/** r,
+    /dev/stdout w,
+    /dev/stderr w,
+  }
+
+  profile file {
+    #include <abstractions/base>
+    /usr/bin/file mr,
+    /usr/share/misc/magic.mgc r,
+    /etc/magic r,
+    /** r,
+    /dev/stdout w,
+    /dev/stderr w,
+  }
+
+  profile apparmor_parser {
+    #include <abstractions/base>
+    /usr/bin/apparmor_parser mr,
+    /etc/apparmor.d/** r,
+    /sys/kernel/security/apparmor/** rw,
+    /proc/*/attr/current w,
+    /dev/stdout w,
+    /dev/stderr w,
+    capability mac_admin,
+  }
+
+  profile aa_enforce {
+    #include <abstractions/base>
+    /usr/bin/aa-enforce mr,
+    /etc/apparmor.d/** r,
+    /sys/kernel/security/apparmor/** rw,
+    /proc/*/attr/current w,
+    /dev/stdout w,
+    /dev/stderr w,
+    capability mac_admin,
+  }
+
+  profile editor {
+    #include <abstractions/base>
+    #include <abstractions/consoles>
+    /usr/bin/nano mr,
+    /usr/bin/vim mr,
+    /usr/bin/vi mr,
+    /etc/usbguard/** rw,
+    /tmp/** rw,
+    /dev/tty rw,
+    /dev/pts/* rw,
+    capability dac_override,
+  }
+}

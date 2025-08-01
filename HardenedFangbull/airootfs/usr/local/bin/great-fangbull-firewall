@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+# Great Fangbull Firewall – Modern nftables Edition
+# Ultra-secure firewall with advanced threat protection
+# Author: root0emir
+# Version: 2.0 - nftables implementation
+
+set -euo pipefail
+
+# Configuration
+LOG_FILE="/var/log/fangbull-firewall.log"
+WAN_IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++){if($i=="dev"){print $(i+1); exit}}}')
+WAN_IFACE=${WAN_IFACE:-"eth0"}
+
+# Logging function
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+log_message "Great Fangbull Firewall (nftables) starting..."
+
+# Check if nftables is available
+if ! command -v nft >/dev/null 2>&1; then
+    log_message "ERROR: nftables not found. Please install nftables package."
+    exit 1
+fi
+
+# Flush all existing rules
+nft flush ruleset
+
+# Create the main firewall configuration
+nft -f - << 'EOF'
+# Great Fangbull Firewall - nftables configuration
+# Ultra-hardened security with performance optimization
+
+# Define table for IPv4 filtering
+table inet fangbull_firewall {
+    # Define sets for efficient IP matching
+    set blocked_ips {
+        type ipv4_addr
+        flags dynamic,timeout
+        timeout 1h
+        size 65536
+    }
+    
+    set rate_limit_ips {
+        type ipv4_addr
+        flags dynamic,timeout
+        timeout 5m
+        size 65536
+    }
+    
+    set allowed_ports {
+        type inet_service
+        elements = { 53, 80, 443, 123 }
+    }
+    
+    # Malicious IP ranges (commonly used by attackers)
+    set malicious_ranges {
+        type ipv4_addr
+        flags interval
+        elements = {
+            10.0.0.0/8,
+            172.16.0.0/12,
+            192.168.0.0/16,
+            169.254.0.0/16,
+            224.0.0.0/4,
+            127.0.0.0/8,
+            0.0.0.0/8,
+            240.0.0.0/4
+        }
+    }
+    
+    # Input chain - incoming packets
+    chain input {
+        type filter hook input priority filter; policy drop;
+        
+        # Performance optimization - accept established connections first
+        ct state established,related accept
+        
+        # Allow loopback traffic
+        iifname "lo" accept
+        
+        # Drop invalid packets immediately
+        ct state invalid log prefix "[INVALID-PKT] " level warn drop
+        
+        # Anti-spoofing: drop packets from malicious ranges on WAN interface
+        iifname $WAN_IFACE ip saddr @malicious_ranges log prefix "[SPOOFED-NET] " level warn drop
+        
+        # Advanced DDoS protection
+        # Rate limit new connections per source IP
+        ct state new add @rate_limit_ips { ip saddr limit rate over 10/minute } log prefix "[RATE-LIMIT] " level warn drop
+        
+        # SYN flood protection
+        tcp flags syn ct state new limit rate over 25/second burst 50 packets log prefix "[SYN-FLOOD] " level warn drop
+        
+        # Port scan detection and blocking
+        tcp flags & (fin|syn|rst|ack) == syn ct state new limit rate over 4/minute burst 6 packets add @blocked_ips { ip saddr timeout 1h } log prefix "[PORT-SCAN] " level warn drop
+        
+        # Block already identified malicious IPs
+        ip saddr @blocked_ips log prefix "[BLOCKED-IP] " level warn drop
+        
+        # Fragment attack protection
+        ip frag-off & 0x1fff != 0 log prefix "[FRAGMENT-ATTACK] " level warn drop
+        
+        # TCP flag attack protection
+        tcp flags & (fin|syn|rst|psh|ack|urg) == 0x0 log prefix "[NULL-SCAN] " level warn drop
+        tcp flags & (fin|syn|rst|psh|ack|urg) == fin|syn|rst|psh|ack|urg log prefix "[XMAS-SCAN] " level warn drop
+        tcp flags & (syn|rst) == syn|rst log prefix "[SYN-RST-SCAN] " level warn drop
+        tcp flags & (syn|fin) == syn|fin log prefix "[SYN-FIN-SCAN] " level warn drop
+        
+        # ICMP flood protection
+        icmp type echo-request limit rate over 2/second burst 5 packets accept
+        icmp type echo-request log prefix "[PING-FLOOD] " level warn drop
+        
+        # Allow essential ICMP types
+        icmp type { echo-reply, destination-unreachable, time-exceeded, parameter-problem } accept
+        
+        # SSH brute force protection (if SSH is enabled)
+        tcp dport 22 ct state new limit rate over 3/minute burst 3 packets accept
+        tcp dport 22 log prefix "[SSH-BRUTE] " level warn drop
+        
+        # Log and drop everything else
+        log prefix "[INPUT-DROP] " level info drop
+    }
+    
+    # Forward chain - packet forwarding (disabled for security)
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        log prefix "[FORWARD-DROP] " level warn drop
+    }
+    
+    # Output chain - outgoing packets
+    chain output {
+        type filter hook output priority filter; policy drop;
+        
+        # Allow loopback traffic
+        oifname "lo" accept
+        
+        # Allow established and related connections
+        ct state established,related accept
+        
+        # Drop invalid packets
+        ct state invalid log prefix "[OUT-INVALID] " level warn drop
+        
+        # Essential services with rate limiting
+        # DNS queries (UDP and TCP)
+        udp dport 53 limit rate over 40/second burst 100 packets accept
+        tcp dport 53 limit rate over 20/second burst 40 packets accept
+        
+        # NTP (time synchronization)
+        udp dport 123 limit rate over 6/hour burst 3 packets accept
+        
+        # HTTP/HTTPS with connection limiting
+        tcp dport { 80, 443 } ct state new limit rate over 50/second burst 100 packets accept
+        
+        # ICMP ping outbound (limited)
+        icmp type echo-request limit rate over 4/second burst 4 packets accept
+        
+        # Allow DHCP client (if needed)
+        udp sport 68 udp dport 67 accept
+        
+        # Log and drop unexpected outbound traffic
+        log prefix "[OUTPUT-DROP] " level info drop
+    }
+    
+    # Prerouting chain for early packet processing
+    chain prerouting {
+        type filter hook prerouting priority raw; policy accept;
+        
+        # Early drop of known bad packets
+        ip saddr @blocked_ips drop
+        
+        # Connection tracking optimization
+        ct state invalid drop
+    }
+}
+
+# IPv6 security (default deny all)
+table ip6 fangbull_firewall_v6 {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        
+        # Allow loopback
+        iifname "lo" accept
+        
+        # Allow established connections
+        ct state established,related accept
+        
+        # Allow essential ICMPv6
+        icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+        
+        # Allow neighbor discovery (essential for IPv6)
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } ip6 hoplimit 255 accept
+        
+        # Log and drop everything else
+        log prefix "[IPv6-DROP] " level info drop
+    }
+    
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        log prefix "[IPv6-FORWARD-DROP] " level warn drop
+    }
+    
+    chain output {
+        type filter hook output priority filter; policy drop;
+        
+        # Allow loopback
+        oifname "lo" accept
+        
+        # Allow established connections
+        ct state established,related accept
+        
+        # Allow essential ICMPv6
+        icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+        
+        # Allow neighbor discovery
+        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } ip6 hoplimit 255 accept
+        
+        # Log unexpected IPv6 traffic
+        log prefix "[IPv6-OUT-DROP] " level info drop
+    }
+}
+EOF
+
+# Apply the nftables configuration
+if nft list ruleset >/dev/null 2>&1; then
+    log_message "nftables rules applied successfully"
+else
+    log_message "ERROR: Failed to apply nftables rules"
+    exit 1
+fi
+
+############################################
+#  Additional Security Enhancements
+############################################
+
+# Enable connection tracking helpers only for essential protocols
+nft add rule inet fangbull_firewall prerouting ct helper set "ftp"
+nft add rule inet fangbull_firewall prerouting ct helper set "tftp"
+
+# Create a blacklist management function
+manage_blacklist() {
+    local action="$1"
+    local ip="$2"
+    
+    case "$action" in
+        "add")
+            nft add element inet fangbull_firewall blocked_ips { "$ip" }
+            log_message "Added $ip to blacklist"
+            ;;
+        "remove")
+            nft delete element inet fangbull_firewall blocked_ips { "$ip" }
+            log_message "Removed $ip from blacklist"
+            ;;
+        "list")
+            nft list set inet fangbull_firewall blocked_ips
+            ;;
+    esac
+}
+
+# GeoIP blocking for high-risk countries (optional)
+# Uncomment and modify as needed
+# nft add set inet fangbull_firewall geoip_blocked { type ipv4_addr\; flags interval\; }
+# nft add rule inet fangbull_firewall input ip saddr @geoip_blocked log prefix "[GEOIP-BLOCK] " level warn drop
+
+############################################
+#  Performance Optimizations
+############################################
+
+# Enable hardware offloading if supported
+if [[ -d /sys/class/net/$WAN_IFACE/queues ]]; then
+    # Enable receive packet steering
+    echo 1 > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || true
+    
+    # Optimize network buffer sizes
+    echo 16777216 > /proc/sys/net/core/rmem_max 2>/dev/null || true
+    echo 16777216 > /proc/sys/net/core/wmem_max 2>/dev/null || true
+fi
+
+############################################
+#  Monitoring and Alerting
+############################################
+
+# Set up log rotation for firewall logs
+cat > /etc/logrotate.d/fangbull-firewall << 'LOGROTATE_EOF'
+/var/log/fangbull-firewall.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+    postrotate
+        systemctl reload rsyslog > /dev/null 2>&1 || true
+    endscript
+}
+LOGROTATE_EOF
+
+# Create firewall status check function
+check_firewall_status() {
+    local status="OK"
+    
+    # Check if nftables is running
+    if ! nft list ruleset >/dev/null 2>&1; then
+        status="ERROR: nftables not running"
+    fi
+    
+    # Check rule count
+    local rule_count=$(nft list ruleset | grep -c "^[[:space:]]*[^#]" || echo 0)
+    if [[ $rule_count -lt 10 ]]; then
+        status="WARNING: Too few rules loaded ($rule_count)"
+    fi
+    
+    log_message "Firewall status: $status (Rules: $rule_count)"
+    echo "$status"
+}
+
+############################################
+#  Persistence and Service Integration
+############################################
+
+# Save current ruleset for persistence
+mkdir -p /etc/nftables
+nft list ruleset > /etc/nftables/fangbull-firewall.nft
+
+# Create systemd service integration
+if command -v systemctl >/dev/null 2>&1; then
+    # Enable nftables service
+    systemctl enable nftables.service 2>/dev/null || true
+    
+    # Create custom service file if it doesn't exist
+    if [[ ! -f /etc/systemd/system/great-fangbull-firewall.service ]]; then
+        log_message "Creating systemd service file"
+    fi
+fi
+
+############################################
+#  Final Security Checks
+############################################
+
+# Verify critical rules are in place
+verify_rules() {
+    local errors=0
+    
+    # Check if default policies are DROP
+    if ! nft list chain inet fangbull_firewall input | grep -q "policy drop"; then
+        log_message "ERROR: Input policy is not DROP"
+        ((errors++))
+    fi
+    
+    if ! nft list chain inet fangbull_firewall output | grep -q "policy drop"; then
+        log_message "ERROR: Output policy is not DROP"
+        ((errors++))
+    fi
+    
+    # Check if loopback is allowed
+    if ! nft list chain inet fangbull_firewall input | grep -q "iifname \"lo\" accept"; then
+        log_message "ERROR: Loopback not allowed in input"
+        ((errors++))
+    fi
+    
+    if [[ $errors -eq 0 ]]; then
+        log_message "All critical firewall rules verified successfully"
+    else
+        log_message "ERROR: $errors critical rule verification failures"
+        exit 1
+    fi
+}
+
+# Run verification
+verify_rules
+
+# Final status check
+check_firewall_status
+
+log_message "Great Fangbull Firewall (nftables) started successfully"
+log_message "Firewall features: DDoS protection, port scan detection, rate limiting, geo-blocking ready"
+log_message "Log file: $LOG_FILE"
+
+exit 0

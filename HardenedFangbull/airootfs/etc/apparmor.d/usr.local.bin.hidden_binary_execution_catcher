@@ -1,0 +1,49 @@
+#include <tunables/global>
+
+/usr/local/bin/hidden_binary_execution_catcher {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability dac_override,
+  capability sys_ptrace,
+
+  /usr/local/bin/hidden_binary_execution_catcher r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # Process monitoring
+  /proc/ r,
+  /proc/*/stat r,
+  /proc/*/status r,
+  /proc/*/cmdline r,
+  /proc/*/exe r,
+  /proc/*/maps r,
+  /proc/*/mem r,
+
+  # File system monitoring
+  /tmp/ r,
+  /tmp/** r,
+  /var/tmp/ r,
+  /var/tmp/** r,
+  /dev/shm/ r,
+  /dev/shm/** r,
+
+  # Fangbull IDS logging and data directories
+  /var/log/fangbull-ids/ rw,
+  /var/log/fangbull-ids/** rw,
+  
+  # Logging
+  /var/log/fangbull-hidden-binary.log w,
+  /dev/log w,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+
+  # Deny dangerous operations
+  deny capability sys_admin,
+  deny capability sys_module,
+  deny /boot/** rw,
+  deny /etc/passwd w,
+  deny /etc/shadow w,
+}

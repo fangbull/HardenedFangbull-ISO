@@ -1,0 +1,63 @@
+#include <tunables/global>
+
+/usr/bin/permissionhardening {
+  #include <abstractions/base>
+  #include <abstractions/bash>
+
+  capability chown,
+  capability fowner,
+  capability dac_override,
+  capability dac_read_search,
+
+  /usr/bin/permissionhardening r,
+  /bin/bash ix,
+  /usr/bin/bash ix,
+
+  # System files that need permission hardening
+  /etc/passwd rw,
+  /etc/shadow rw,
+  /etc/group rw,
+  /etc/gshadow rw,
+  /etc/sudoers rw,
+  /etc/hosts rw,
+  /etc/sudoers.d/ rw,
+  /etc/sudoers.d/** rw,
+
+  # Critical directories
+  /root/ rw,
+  /root/** rw,
+  /var/log/ rw,
+  /var/log/** rw,
+  /boot/ rw,
+  /boot/** rw,
+  /etc/cron.d/ rw,
+  /etc/cron.d/** rw,
+  /etc/cron.daily/ rw,
+  /etc/cron.daily/** rw,
+  /etc/cron.hourly/ rw,
+  /etc/cron.hourly/** rw,
+  /etc/cron.monthly/ rw,
+  /etc/cron.monthly/** rw,
+  /etc/cron.weekly/ rw,
+  /etc/cron.weekly/** rw,
+
+  # Profile and bashrc files for umask setting
+  /etc/profile rw,
+  /etc/bash.bashrc rw,
+
+  # Logging
+  /var/log/fangbull-permission-hardening.log w,
+  /dev/log w,
+
+  # System libraries
+  /etc/ld.so.cache r,
+  /usr/lib/x86_64-linux-gnu/** mr,
+  /lib/x86_64-linux-gnu/** mr,
+
+  # Common system files
+  /etc/nsswitch.conf r,
+
+  # Deny dangerous operations
+  deny capability sys_module,
+  deny capability sys_admin,
+}

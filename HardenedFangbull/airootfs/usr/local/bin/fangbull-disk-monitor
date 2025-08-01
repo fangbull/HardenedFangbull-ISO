@@ -1,0 +1,144 @@
+#!/bin/bash
+
+# Fangbull Disk Space Monitor - Emergency log cleanup when disk is full
+# Prevents system crashes due to log explosion
+# Author: root0emir
+# Last Modified: 2025-01-08
+
+# Configuration
+DISK_THRESHOLD=85  # Trigger cleanup at 85% disk usage
+CRITICAL_THRESHOLD=95  # Emergency cleanup at 95%
+LOG_DIR="/var/log/fangbull-ids"
+CHECK_INTERVAL=300  # Check every 5 minutes
+
+# Load log manager functions
+source /usr/local/bin/fangbull-log-manager 2>/dev/null || {
+    echo "Error: fangbull-log-manager not found" >&2
+    exit 1
+}
+
+# Check disk usage for a given path
+check_disk_usage() {
+    local path="$1"
+    df "$path" | awk 'NR==2 {print $5}' | sed 's/%//'
+}
+
+# Send alert to system
+send_alert() {
+    local level="$1"
+    local message="$2"
+    
+    # Log to syslog
+    logger -t "fangbull-disk-monitor" -p daemon."$level" "$message"
+    
+    # Log to our system
+    fangbull_log "$(echo "$level" | tr '[:lower:]' '[:upper:]')" "disk_monitor" "$message"
+    
+    # Send to all logged-in users if critical
+    if [ "$level" = "crit" ]; then
+        echo "CRITICAL: $message" | wall 2>/dev/null
+    fi
+}
+
+# Perform graduated cleanup based on disk usage
+perform_cleanup() {
+    local usage="$1"
+    local cleanup_level=""
+    
+    if [ "$usage" -ge "$CRITICAL_THRESHOLD" ]; then
+        cleanup_level="emergency"
+        send_alert "crit" "Disk usage at ${usage}% - performing emergency cleanup"
+        
+        # Emergency cleanup
+        emergency_cleanup
+        
+        # Also clean system logs if still critical
+        if [ "$(check_disk_usage /var/log)" -ge "$CRITICAL_THRESHOLD" ]; then
+            journalctl --vacuum-time=1d 2>/dev/null
+            find /var/log -name "*.log" -type f -mtime +1 -size +10M -delete 2>/dev/null
+        fi
+        
+    elif [ "$usage" -ge "$DISK_THRESHOLD" ]; then
+        cleanup_level="standard"
+        send_alert "warning" "Disk usage at ${usage}% - performing standard cleanup"
+        
+        # Standard cleanup
+        optimize_logs
+        
+        # Clean temporary files
+        find /tmp -type f -mtime +1 -delete 2>/dev/null
+        find /var/tmp -type f -mtime +1 -delete 2>/dev/null
+    fi
+    
+    # Report cleanup results
+    local new_usage=$(check_disk_usage /var/log)
+    if [ "$new_usage" -lt "$usage" ]; then
+        local saved=$((usage - new_usage))
+        send_alert "info" "Cleanup completed: freed ${saved}% disk space (${usage}% -> ${new_usage}%)"
+    fi
+}
+
+# Monitor disk space continuously
+monitor_disk_space() {
+    send_alert "info" "Disk space monitoring started (threshold: ${DISK_THRESHOLD}%, critical: ${CRITICAL_THRESHOLD}%)"
+    
+    while true; do
+        local usage=$(check_disk_usage "$LOG_DIR")
+        
+        if [ "$usage" -ge "$DISK_THRESHOLD" ]; then
+            perform_cleanup "$usage"
+        fi
+        
+        # Check if any IDS logs are growing too fast
+        find "$LOG_DIR" -name "*.log" -type f -size +20M -exec basename {} \; | while read -r logfile; do
+            send_alert "warning" "Large log file detected: $logfile (>20MB)"
+        done
+        
+        sleep "$CHECK_INTERVAL"
+    done
+}
+
+# One-time disk check
+check_disk_once() {
+    local usage=$(check_disk_usage "$LOG_DIR")
+    echo "Current disk usage: ${usage}%"
+    
+    if [ "$usage" -ge "$CRITICAL_THRESHOLD" ]; then
+        echo "CRITICAL: Performing emergency cleanup..."
+        perform_cleanup "$usage"
+    elif [ "$usage" -ge "$DISK_THRESHOLD" ]; then
+        echo "WARNING: Performing standard cleanup..."
+        perform_cleanup "$usage"
+    else
+        echo "Disk usage is normal."
+    fi
+}
+
+# Main function
+main() {
+    case "$1" in
+        "monitor")
+            monitor_disk_space
+            ;;
+        "check")
+            check_disk_once
+            ;;
+        "cleanup")
+            local usage=$(check_disk_usage "$LOG_DIR")
+            perform_cleanup "$usage"
+            ;;
+        *)
+            echo "Usage: $0 {monitor|check|cleanup}"
+            echo "  monitor  - Continuously monitor disk space"
+            echo "  check    - One-time disk space check"
+            echo "  cleanup  - Force cleanup based on current usage"
+            exit 1
+            ;;
+    esac
+}
+
+# Set process priority
+renice 10 $$ > /dev/null 2>&1
+
+# Run main function
+main "$@"
