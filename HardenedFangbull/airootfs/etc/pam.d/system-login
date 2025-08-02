@@ -1,18 +1,18 @@
 #%PAM-1.0
 
-auth       required   pam_faillock.so      preauth
-auth       required   pam_shells.so
-auth       requisite  pam_nologin.so
+auth       optional   pam_faillock.so      preauth
+auth       optional   pam_shells.so
+auth       optional   pam_nologin.so
 
 
 auth       required   pam_unix.so
-auth       [default=die] pam_faillock.so authfail
-auth       sufficient pam_faillock.so authsucc
+auth       optional   pam_faillock.so authfail
+auth       optional   pam_faillock.so authsucc
 
 
-account    required   pam_faillock.so
-account    required   pam_access.so
-account    required   pam_nologin.so
+account    optional   pam_faillock.so
+account    optional   pam_access.so
+account    optional   pam_nologin.so
 
 
 password   required   pam_unix.so
