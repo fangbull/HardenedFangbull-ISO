@@ -59,10 +59,6 @@ chattr +i /etc/sysctl.d/sysctl.conf
 # IDS system will be re-implemented with better resource management later"
 
 # Protect firewall and system management scripts
-chattr +i /usr/local/bin/great-fangbull-firewall
-chattr +i /usr/local/bin/fangbull-sys
-chattr +i /usr/local/bin/fangbull-crypt
-chattr +i /usr/bin/permissionhardening
 
 # Protect systemd service files
 echo "[INFO] Protecting systemd service files..."
